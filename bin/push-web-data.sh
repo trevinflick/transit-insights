@@ -22,6 +22,7 @@ if git diff --quiet public/data/alerts.json; then
 fi
 
 git add public/data/alerts.json
-git commit -m "data: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+git -c user.name="cta-bot" -c user.email="cta-bot@users.noreply.github.com" \
+  commit -m "data: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 git push
 echo "push-web-data: pushed"
