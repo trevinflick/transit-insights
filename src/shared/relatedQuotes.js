@@ -377,9 +377,28 @@ async function processGroup({
   return posted;
 }
 
+// Cheap DB-only count of anchors that could plausibly attract quote-attach
+// candidates this tick. Used to short-circuit before we spend a Bluesky
+// session on `getRecord` calls — alerts.js runs the sweep every */10 and on
+// quiet nights this is the difference between ~144 logins/day per account
+// and zero.
+function countCandidateAnchors(kind, now) {
+  let n = 0;
+  for (const a of listUnresolvedAlerts(kind)) if (a.post_uri) n++;
+  if (kind === 'train') {
+    for (const a of listActiveTrainPulseAnchors()) if (a.active_post_uri) n++;
+  }
+  if (kind === 'bus') {
+    for (const a of listActiveBusPulseAnchors()) if (a.active_post_uri) n++;
+  }
+  for (const _ of listActiveRoundupAnchors(kind, now)) n++;
+  return n;
+}
+
 async function sweepRelatedQuotes({
   kind,
   agent,
+  agentGetter,
   dryRun = false,
   now = Date.now(),
   getKnownPidsForRoute = () => [],
@@ -389,14 +408,20 @@ async function sweepRelatedQuotes({
     console.log(`[${kind}/related-quotes] disabled via QUOTE_RELATED_POSTS=0`);
     return { groups: 0, posted: 0 };
   }
-  const groups = await buildWorkItems({ kind, agent, now });
+  if (countCandidateAnchors(kind, now) === 0) {
+    console.log(`[${kind}/related-quotes] 0 anchor(s) — skipping login`);
+    return { groups: 0, posted: 0 };
+  }
+  const liveAgent = agent || (agentGetter ? await agentGetter() : null);
+  if (!liveAgent) throw new Error('sweepRelatedQuotes: agent or agentGetter required');
+  const groups = await buildWorkItems({ kind, agent: liveAgent, now });
   let posted = 0;
   for (const g of groups) {
     try {
       posted += await processGroup({
         group: g,
         kind,
-        agent,
+        agent: liveAgent,
         dryRun,
         now,
         getKnownPidsForRoute,

@@ -1,7 +1,66 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
 const { AtpAgent } = require('@atproto/api');
 
+// Bluesky enforces a per-account daily createSession cap (~300/day) plus a
+// sliding 30/5min limit. Each cron tick used to call agent.login() fresh,
+// which on a busy day exhausted the daily cap and locked the account out for
+// hours. We now persist the session JWTs to disk and resume on subsequent
+// runs — agent.login() is only hit on first use or after a refresh-token
+// expiry (~3 months).
+const SESSION_DIR =
+  process.env.BLUESKY_SESSION_DIR || path.join(__dirname, '..', '..', 'data', 'bluesky-sessions');
+
+function sessionPath(identifier) {
+  const key = crypto.createHash('sha1').update(identifier).digest('hex').slice(0, 16);
+  return path.join(SESSION_DIR, `${key}.json`);
+}
+
+function loadSession(identifier) {
+  try {
+    return JSON.parse(fs.readFileSync(sessionPath(identifier), 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveSession(identifier, session) {
+  try {
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+    fs.writeFileSync(sessionPath(identifier), JSON.stringify(session), { mode: 0o600 });
+  } catch (e) {
+    console.warn(`bluesky: failed to persist session: ${e.message}`);
+  }
+}
+
+function clearSession(identifier) {
+  try {
+    fs.unlinkSync(sessionPath(identifier));
+  } catch (_) {}
+}
+
 async function login(identifier, password) {
-  const agent = new AtpAgent({ service: process.env.BLUESKY_SERVICE || 'https://bsky.social' });
+  const persistSession = (evt, session) => {
+    if (evt === 'create' || evt === 'update') {
+      if (session) saveSession(identifier, session);
+    } else if (evt === 'expired') {
+      clearSession(identifier);
+    }
+  };
+  const agent = new AtpAgent({
+    service: process.env.BLUESKY_SERVICE || 'https://bsky.social',
+    persistSession,
+  });
+  const cached = loadSession(identifier);
+  if (cached) {
+    try {
+      await agent.resumeSession(cached);
+      if (agent.session?.accessJwt) return agent;
+    } catch (_) {
+      clearSession(identifier);
+    }
+  }
   await agent.login({ identifier, password });
   return agent;
 }

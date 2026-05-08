@@ -242,7 +242,7 @@ async function main() {
   // anchors (existing alerts, observation pulses) are independent of this
   // tick's fetch.
   try {
-    await sweepRelatedQuotes({ kind: KIND, agent: await agentGetter(), dryRun: DRY_RUN });
+    await sweepRelatedQuotes({ kind: KIND, agentGetter, dryRun: DRY_RUN });
   } catch (e) {
     console.error(`related-quotes sweep failed: ${e.stack || e.message}`);
   }

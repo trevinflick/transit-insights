@@ -224,7 +224,7 @@ async function main() {
   try {
     await sweepRelatedQuotes({
       kind: KIND,
-      agent: await agentGetter(),
+      agentGetter,
       dryRun: DRY_RUN,
       getKnownPidsForRoute: (route) =>
         getKnownBusPidsForRoute(route, Date.now() - KNOWN_PIDS_LOOKBACK_MS),
