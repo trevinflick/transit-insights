@@ -176,9 +176,16 @@ function main() {
   if (outputPath) {
     // Only write if the data actually changed — generated_at updates every run
     // so we compare only alerts + observations to avoid spurious git commits.
+    // last_seen_ts ticks forward on every re-sighting of an active alert; the
+    // web UI only uses it as a coarse fallback bound (incidents.js, 2h buffer),
+    // so excluding it from the comparison avoids commits with no real change.
+    const stripVolatile = (alert) => {
+      const { last_seen_ts: _ignored, ...rest } = alert;
+      return rest;
+    };
     const dataOnly = JSON.stringify({
       data_start_ts: out.data_start_ts,
-      alerts: out.alerts,
+      alerts: out.alerts.map(stripVolatile),
       observations: out.observations,
     });
     let existingDataOnly = null;
@@ -187,7 +194,7 @@ function main() {
         const existing = JSON.parse(Fs.readFileSync(outputPath, 'utf8'));
         existingDataOnly = JSON.stringify({
           data_start_ts: existing.data_start_ts,
-          alerts: existing.alerts,
+          alerts: (existing.alerts || []).map(stripVolatile),
           observations: existing.observations,
         });
       } catch (_) {}
