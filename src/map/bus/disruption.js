@@ -23,6 +23,18 @@ const { pairedStationLabels } = require('../disruption');
 // back to text-only.
 const MAX_ROUTES = 5;
 
+// Distinct palette for multi-route alerts. Picked for high mutual contrast
+// on Mapbox's light style and to avoid collision with CTA train-line colors
+// when a bus route runs along a rail corridor. First entry matches the
+// single-route cyan from common.js so a 1-route render is unchanged.
+const MULTI_ROUTE_PALETTE = [
+  '00d8ff', // cyan
+  'f97316', // orange
+  'a855f7', // violet
+  'ffd60a', // amber
+  'ec4899', // pink
+];
+
 // Dim/active styling for the rich single-route renderer. Same shape as the
 // train disruption renderer so the brand is consistent. Bus dim opacity is
 // lower than train (0.4 → 0.18) because bus polylines are denser through
@@ -71,12 +83,21 @@ async function renderBusDisruption({ routes, getKnownPidsForRoute, loadPattern, 
   const zoom = Math.max(8, Math.min(13, Math.floor(fitZoom(bbox, WIDTH, HEIGHT, 80))));
 
   const overlays = [];
-  for (const polys of polylinesByRoute.values()) {
+  const colorByRoute = new Map();
+  let colorIdx = 0;
+  // Single-route renders keep the cyan core (palette[0]); multi-route walks
+  // the palette so each route is visually distinct.
+  for (const [route, polys] of polylinesByRoute) {
+    const core =
+      polylinesByRoute.size === 1
+        ? ROUTE_CORE_COLOR
+        : MULTI_ROUTE_PALETTE[colorIdx++ % MULTI_ROUTE_PALETTE.length];
+    colorByRoute.set(route, core);
     for (const poly of polys) {
       const enc = encodeURIComponent(encode(poly));
       // Halo first, then bright core on top.
       overlays.push(`path-${ROUTE_HALO_STROKE}+${ROUTE_HALO_COLOR}(${enc})`);
-      overlays.push(`path-${ROUTE_CORE_STROKE}+${ROUTE_CORE_COLOR}(${enc})`);
+      overlays.push(`path-${ROUTE_CORE_STROKE}+${core}(${enc})`);
     }
   }
 
@@ -98,9 +119,46 @@ async function renderBusDisruption({ routes, getKnownPidsForRoute, loadPattern, 
     42,
     WIDTH - 48,
   );
+  // Legend (multi-route only): bottom-right stack, one row per route with a
+  // colored swatch and the route id. Keeps the color → route mapping
+  // explicit so the map is readable at a glance.
+  const legendRows = [];
+  if (colorByRoute.size > 1) {
+    const rowH = 36;
+    const swatch = 22;
+    const padX = 14;
+    const padY = 10;
+    const gap = 10;
+    const fontSize = 22;
+    // Approximate text width — Inter ~0.55em average. Sized for short bus
+    // route ids (1–4 chars); the legend is a small reference, not a wall.
+    const labels = [...colorByRoute.entries()].map(([route]) => `#${route}`);
+    const textW = Math.max(...labels.map((l) => Math.ceil(l.length * fontSize * 0.55)));
+    const rowW = swatch + gap + textW;
+    const boxW = rowW + padX * 2;
+    const boxH = rowH * colorByRoute.size + padY * 2;
+    const boxX = WIDTH - boxW - 24;
+    const boxY = HEIGHT - boxH - 24;
+    legendRows.push(
+      `<rect x="${boxX}" y="${boxY}" width="${boxW}" height="${boxH}" fill="#000" fill-opacity="0.78" rx="10"/>`,
+    );
+    let i = 0;
+    for (const [route, color] of colorByRoute) {
+      const cy = boxY + padY + i * rowH + rowH / 2;
+      const sx = boxX + padX;
+      const sy = cy - swatch / 2;
+      legendRows.push(
+        `<rect x="${sx}" y="${sy}" width="${swatch}" height="${swatch}" rx="4" fill="#${color}"/>`,
+        `<text x="${sx + swatch + gap}" y="${cy + fontSize / 2 - 4}" fill="#fff" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700">${xmlEscape(`#${route}`)}</text>`,
+      );
+      i++;
+    }
+  }
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">
     <rect x="24" y="24" width="${titleWidth}" height="88" fill="#000" fill-opacity="0.78" rx="10"/>
     <text x="48" y="84" fill="#fff" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${titleFontSize}" font-weight="700">${xmlEscape(titleText)}</text>
+    ${legendRows.join('\n    ')}
   </svg>`;
 
   return sharp(baseMap)
