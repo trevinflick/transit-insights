@@ -121,6 +121,8 @@ async function postNewAlert(alert, agentGetter) {
     affectedFromStation: between?.from || null,
     affectedToStation: between?.to || null,
     affectedDirection: direction,
+    ctaEventStartTs: alert.eventStart ?? null,
+    ctaEventEndTs: alert.eventEnd ?? null,
   });
 
   const agent = await agentGetter();
@@ -168,6 +170,8 @@ async function postNewAlert(alert, agentGetter) {
     routes,
     headline: alert.headline,
     postUri: result.uri,
+    ctaEventStartTs: alert.eventStart ?? null,
+    ctaEventEndTs: alert.eventEnd ?? null,
   });
 }
 
@@ -227,6 +231,8 @@ async function main() {
           routes: alert.trainLines.join(','),
           headline: alert.headline,
           postUri: null,
+          ctaEventStartTs: alert.eventStart ?? null,
+          ctaEventEndTs: alert.eventEnd ?? null,
         });
       }
       continue;

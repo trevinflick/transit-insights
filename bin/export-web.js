@@ -40,7 +40,8 @@ function main() {
         alert_id, kind, routes, headline,
         first_seen_ts, last_seen_ts, resolved_ts,
         post_uri, resolved_reply_uri,
-        affected_from_station, affected_to_station, affected_direction
+        affected_from_station, affected_to_station, affected_direction,
+        cta_event_start_ts, cta_event_end_ts
        FROM alert_posts
        ORDER BY first_seen_ts DESC`,
     )
@@ -151,6 +152,11 @@ function main() {
       affected_from_station: row.affected_from_station ?? null,
       affected_to_station: row.affected_to_station ?? null,
       affected_direction: row.affected_direction ?? null,
+      // CTA's own claimed start/end for the alert. Populated when the alert
+      // carried EventStart/EventEnd at fetch time. Survives even if the CTA
+      // later scrubs the alert from their `?alertid=` lookup.
+      cta_event_start_ts: row.cta_event_start_ts ?? null,
+      cta_event_end_ts: row.cta_event_end_ts ?? null,
     })),
     observations: observations.map((row) => ({
       id: row.id,

@@ -252,6 +252,16 @@ function db() {
   if (!alertCols.includes('affected_direction')) {
     _db.exec('ALTER TABLE alert_posts ADD COLUMN affected_direction TEXT');
   }
+  // CTA-side timing windows from the alert's EventStart / EventEnd fields.
+  // Useful for forensic timing analysis on alerts the CTA scrubs immediately
+  // (their `?alertid=` lookup stops returning the row, so we'd otherwise lose
+  // CTA's own claimed start/end the moment they pull it from the active feed).
+  if (!alertCols.includes('cta_event_start_ts')) {
+    _db.exec('ALTER TABLE alert_posts ADD COLUMN cta_event_start_ts INTEGER');
+  }
+  if (!alertCols.includes('cta_event_end_ts')) {
+    _db.exec('ALTER TABLE alert_posts ADD COLUMN cta_event_end_ts INTEGER');
+  }
   const disruptionCols = _db
     .prepare('PRAGMA table_info(disruption_events)')
     .all()
@@ -360,12 +370,16 @@ function recordAlertSeen(
     affectedFromStation,
     affectedToStation,
     affectedDirection,
+    ctaEventStartTs,
+    ctaEventEndTs,
   },
   now = Date.now(),
 ) {
   const af = affectedFromStation == null ? null : affectedFromStation;
   const at = affectedToStation == null ? null : affectedToStation;
   const ad = affectedDirection == null ? null : affectedDirection;
+  const es = ctaEventStartTs == null ? null : ctaEventStartTs;
+  const ee = ctaEventEndTs == null ? null : ctaEventEndTs;
   const existing = getAlertPost(alertId);
   if (existing) {
     // Re-engage tracking when (a) post finally lands after a premature
@@ -385,10 +399,12 @@ function recordAlertSeen(
             affected_from_station = COALESCE(?, affected_from_station),
             affected_to_station = COALESCE(?, affected_to_station),
             affected_direction = COALESCE(?, affected_direction),
+            cta_event_start_ts = COALESCE(?, cta_event_start_ts),
+            cta_event_end_ts = COALESCE(?, cta_event_end_ts),
             resolved_ts = NULL, resolved_reply_uri = NULL, clear_ticks = 0
         WHERE alert_id = ?
       `)
-        .run(now, postUri || null, headline || null, routes || null, af, at, ad, alertId);
+        .run(now, postUri || null, headline || null, routes || null, af, at, ad, es, ee, alertId);
     } else {
       db()
         .prepare(`
@@ -397,10 +413,12 @@ function recordAlertSeen(
             headline = COALESCE(?, headline), routes = COALESCE(?, routes),
             affected_from_station = COALESCE(?, affected_from_station),
             affected_to_station = COALESCE(?, affected_to_station),
-            affected_direction = COALESCE(?, affected_direction)
+            affected_direction = COALESCE(?, affected_direction),
+            cta_event_start_ts = COALESCE(?, cta_event_start_ts),
+            cta_event_end_ts = COALESCE(?, cta_event_end_ts)
         WHERE alert_id = ?
       `)
-        .run(now, postUri || null, headline || null, routes || null, af, at, ad, alertId);
+        .run(now, postUri || null, headline || null, routes || null, af, at, ad, es, ee, alertId);
     }
     return;
   }
@@ -408,10 +426,24 @@ function recordAlertSeen(
     .prepare(`
     INSERT INTO alert_posts
       (alert_id, kind, routes, headline, first_seen_ts, last_seen_ts, post_uri,
-       affected_from_station, affected_to_station, affected_direction)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       affected_from_station, affected_to_station, affected_direction,
+       cta_event_start_ts, cta_event_end_ts)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-    .run(alertId, kind, routes || null, headline || null, now, now, postUri || null, af, at, ad);
+    .run(
+      alertId,
+      kind,
+      routes || null,
+      headline || null,
+      now,
+      now,
+      postUri || null,
+      af,
+      at,
+      ad,
+      es,
+      ee,
+    );
 }
 
 function recordAlertResolved({ alertId, replyUri }, now = Date.now()) {
