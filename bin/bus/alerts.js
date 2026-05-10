@@ -192,6 +192,11 @@ async function main() {
   const alerts = await fetchAlerts({ activeOnly: true });
   const relevant = alerts.filter(isRelevant);
   const activeIds = new Set(relevant.map((a) => a.id));
+  // Pre-filter set: alerts CTA still considers active, regardless of our
+  // significance gate. Used by the resolution sweep to distinguish "CTA
+  // cleared this" (post a resolution reply) from "we filtered it out"
+  // (silent close — posting a 'CTA has cleared' reply would be a lie).
+  const ctaActiveIds = new Set(alerts.map((a) => a.id));
 
   console.log(
     `Fetched ${alerts.length} active alerts, ${relevant.length} relevant to tracked bus routes`,
@@ -249,6 +254,23 @@ async function main() {
   for (const row of unresolved) {
     if (activeIds.has(row.alert_id)) {
       if (!DRY_RUN && row.clear_ticks > 0) resetAlertClearTicks(row.alert_id);
+      continue;
+    }
+    // Still in CTA's feed but our gate now rejects it (e.g. tightened the
+    // significance filter). Mark resolved silently — the original post
+    // stays, but we stop tracking and don't post a misleading "CTA has
+    // cleared" reply.
+    if (ctaActiveIds.has(row.alert_id)) {
+      if (DRY_RUN) {
+        console.log(
+          `--- DRY RUN would silently close alert ${row.alert_id} (still in CTA feed but filtered out; DB write skipped) ---`,
+        );
+        continue;
+      }
+      console.log(
+        `Alert ${row.alert_id} silently closed — still in CTA feed but no longer passes significance gate`,
+      );
+      recordAlertResolved({ alertId: row.alert_id, replyUri: null });
       continue;
     }
     if (DRY_RUN) {
