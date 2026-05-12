@@ -305,6 +305,7 @@ test('significant: high-severity reroute admits even when long-duration', () => 
       makeAlert({
         major: false,
         severityScore: 60,
+        severityCss: 'major',
         headline: 'Major Police Activity Reroute',
         shortDescription:
           'Buses on routes 1, 2, 3 are rerouted indefinitely due to ongoing investigation.',
@@ -339,11 +340,16 @@ test('significant: multi-route reroute admits when dates absent (unknown duratio
 
 test('significant: high-severity single-route reroute admits (police activity)', () => {
   // Real alert from 2026-05-08: #84 Peterson police activity at sev 55.
+  // The admit relies on CTA classifying the alert as non-minor in
+  // `SeverityCSS` / `Impact` — `severityCss !== 'minor'` is what
+  // distinguishes acute incidents from CTA-tagged minor reroutes that
+  // happen to also score 55 (see 114870/114821 below).
   assert.equal(
     isSignificantAlert(
       makeAlert({
         major: false,
         severityScore: 55,
+        severityCss: 'major',
         headline: '#84 Peterson Temporary Reroute near Bryn Mawr/Sheridan',
         shortDescription:
           '84 Peterson buses temp. rerouted: due to, police activity near Bryn Mawr/Sheridan.',
@@ -352,6 +358,58 @@ test('significant: high-severity single-route reroute admits (police activity)',
     ),
     true,
   );
+});
+
+test('not significant: sev=55 reroute that CTA itself tags `SeverityCSS=minor`', () => {
+  // Real alerts 114870 (#15 + #172 Hyde Park/Woodlawn) and 114821 (#72 North
+  // at Kolmar): routine street-blockage reroutes scoring 55 but tagged
+  // `Impact: "Minor Delays / Reroute"` / `SeverityCSS: "minor"` in the
+  // same feed payload. Trust CTA's own label over the numeric score.
+  assert.equal(
+    isSignificantAlert(
+      makeAlert({
+        major: false,
+        severityScore: 55,
+        severityCss: 'minor',
+        impact: 'Minor Delays / Reroute',
+        headline: '#15 Jeffery Local and #172 U. of Chicago/Kenwood Temporary Reroute',
+        shortDescription:
+          '15 Jeffery Local buses rrted via 51st, Woodlawn, and Lake Pk. and 172 U. of Chicago/Kenwood buses rrted via Woodlawn, 53rd, and Lake Pk nr Hyde Park/Woodlawn.',
+        busRoutes: ['15', '172'],
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    isSignificantAlert(
+      makeAlert({
+        major: false,
+        severityScore: 55,
+        severityCss: 'minor',
+        impact: 'Minor Delays / Reroute',
+        headline: '#72 North Temporary Eastbound Reroute near North Ave./Kolmar',
+        shortDescription:
+          'EB 72 North buses are temporarily rerouted via North Avenue, Cicero, Grand, North Avenue and over regular route, due to street blockage near North Ave./Kolmar.',
+        busRoutes: ['72'],
+      }),
+    ),
+    false,
+  );
+});
+
+test('normalizeAlert parses SeverityCSS and Impact', () => {
+  const raw = {
+    AlertId: '114870',
+    Headline: '#15 Reroute',
+    SeverityScore: '55',
+    SeverityCSS: 'minor',
+    Impact: 'Minor Delays / Reroute',
+    MajorAlert: '0',
+  };
+  const a = normalizeAlert(raw);
+  assert.equal(a.severityScore, 55);
+  assert.equal(a.severityCss, 'minor');
+  assert.equal(a.impact, 'Minor Delays / Reroute');
 });
 
 test('not significant: single-route reroute at default severity (block-party detour)', () => {

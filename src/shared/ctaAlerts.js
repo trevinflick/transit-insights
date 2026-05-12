@@ -63,6 +63,8 @@ function normalizeAlert(raw) {
     major: raw.MajorAlert === '1' || raw.MajorAlert === 1 || raw.MajorAlert === true,
     severityScore: raw.SeverityScore != null ? parseInt(raw.SeverityScore, 10) : null,
     severityColor: raw.SeverityColor || null,
+    severityCss: raw.SeverityCSS ? String(raw.SeverityCSS).toLowerCase() : null,
+    impact: raw.Impact ? String(raw.Impact) : null,
     eventStart: raw.EventStart ? parseCtaDate(raw.EventStart) : null,
     eventEnd: raw.EventEnd ? parseCtaDate(raw.EventEnd) : null,
     busRoutes,
@@ -318,8 +320,17 @@ function isSignificantAlert(alert) {
   // incident) are admitted even though "reroute" alone normally vetoes.
   if (REROUTE_RE.test(summary)) {
     // High-severity wins outright — sev≥50 reroutes are acute events
-    // (police activity, crash) regardless of declared duration.
-    if (alert.severityScore != null && alert.severityScore >= HIGH_SEVERITY_THRESHOLD) {
+    // (police activity, crash) regardless of declared duration. But CTA
+    // sometimes assigns sev=55 to routine street-blockage reroutes while
+    // simultaneously tagging them `SeverityCSS=minor` / `Impact=Minor Delays /
+    // Reroute` in the same feed payload. Trust CTA's own classification when
+    // it disagrees with the score: if CTA itself calls it minor, it isn't an
+    // acute incident regardless of the numeric severity.
+    if (
+      alert.severityScore != null &&
+      alert.severityScore >= HIGH_SEVERITY_THRESHOLD &&
+      alert.severityCss !== 'minor'
+    ) {
       return true;
     }
     const routeCount = (alert.busRoutes?.length || 0) + (alert.trainLines?.length || 0);
