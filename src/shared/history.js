@@ -77,6 +77,7 @@ function db() {
       kind TEXT NOT NULL,
       routes TEXT,
       headline TEXT,
+      short_description TEXT,
       first_seen_ts INTEGER NOT NULL,
       last_seen_ts INTEGER NOT NULL,
       post_uri TEXT,
@@ -262,6 +263,13 @@ function db() {
   if (!alertCols.includes('cta_event_end_ts')) {
     _db.exec('ALTER TABLE alert_posts ADD COLUMN cta_event_end_ts INTEGER');
   }
+  // CTA's own body text for the alert (ShortDescription, falling back to
+  // FullDescription at write time). Surfaced verbatim on the public event
+  // page so readers see the reroute/closure details CTA published, not just
+  // the one-line headline.
+  if (!alertCols.includes('short_description')) {
+    _db.exec('ALTER TABLE alert_posts ADD COLUMN short_description TEXT');
+  }
   const disruptionCols = _db
     .prepare('PRAGMA table_info(disruption_events)')
     .all()
@@ -366,6 +374,7 @@ function recordAlertSeen(
     kind,
     routes,
     headline,
+    shortDescription,
     postUri,
     affectedFromStation,
     affectedToStation,
@@ -380,6 +389,7 @@ function recordAlertSeen(
   const ad = affectedDirection == null ? null : affectedDirection;
   const es = ctaEventStartTs == null ? null : ctaEventStartTs;
   const ee = ctaEventEndTs == null ? null : ctaEventEndTs;
+  const sd = shortDescription == null ? null : shortDescription;
   const existing = getAlertPost(alertId);
   if (existing) {
     // Re-engage tracking when (a) post finally lands after a premature
@@ -396,6 +406,7 @@ function recordAlertSeen(
         UPDATE alert_posts
         SET last_seen_ts = ?, post_uri = COALESCE(?, post_uri),
             headline = COALESCE(?, headline), routes = COALESCE(?, routes),
+            short_description = COALESCE(?, short_description),
             affected_from_station = COALESCE(?, affected_from_station),
             affected_to_station = COALESCE(?, affected_to_station),
             affected_direction = COALESCE(?, affected_direction),
@@ -404,13 +415,26 @@ function recordAlertSeen(
             resolved_ts = NULL, resolved_reply_uri = NULL, clear_ticks = 0
         WHERE alert_id = ?
       `)
-        .run(now, postUri || null, headline || null, routes || null, af, at, ad, es, ee, alertId);
+        .run(
+          now,
+          postUri || null,
+          headline || null,
+          routes || null,
+          sd,
+          af,
+          at,
+          ad,
+          es,
+          ee,
+          alertId,
+        );
     } else {
       db()
         .prepare(`
         UPDATE alert_posts
         SET last_seen_ts = ?, post_uri = COALESCE(?, post_uri),
             headline = COALESCE(?, headline), routes = COALESCE(?, routes),
+            short_description = COALESCE(?, short_description),
             affected_from_station = COALESCE(?, affected_from_station),
             affected_to_station = COALESCE(?, affected_to_station),
             affected_direction = COALESCE(?, affected_direction),
@@ -418,23 +442,37 @@ function recordAlertSeen(
             cta_event_end_ts = COALESCE(?, cta_event_end_ts)
         WHERE alert_id = ?
       `)
-        .run(now, postUri || null, headline || null, routes || null, af, at, ad, es, ee, alertId);
+        .run(
+          now,
+          postUri || null,
+          headline || null,
+          routes || null,
+          sd,
+          af,
+          at,
+          ad,
+          es,
+          ee,
+          alertId,
+        );
     }
     return;
   }
   db()
     .prepare(`
     INSERT INTO alert_posts
-      (alert_id, kind, routes, headline, first_seen_ts, last_seen_ts, post_uri,
+      (alert_id, kind, routes, headline, short_description,
+       first_seen_ts, last_seen_ts, post_uri,
        affected_from_station, affected_to_station, affected_direction,
        cta_event_start_ts, cta_event_end_ts)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .run(
       alertId,
       kind,
       routes || null,
       headline || null,
+      sd,
       now,
       now,
       postUri || null,

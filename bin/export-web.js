@@ -37,7 +37,7 @@ function main() {
   const alerts = db
     .prepare(
       `SELECT
-        alert_id, kind, routes, headline,
+        alert_id, kind, routes, headline, short_description,
         first_seen_ts, last_seen_ts, resolved_ts,
         post_uri, resolved_reply_uri,
         affected_from_station, affected_to_station, affected_direction,
@@ -142,6 +142,7 @@ function main() {
       kind: row.kind,
       routes: row.routes ? row.routes.split(',').filter(Boolean) : [],
       headline: row.headline,
+      short_description: row.short_description ?? null,
       first_seen_ts: row.first_seen_ts,
       last_seen_ts: row.last_seen_ts,
       resolved_ts: row.resolved_ts ?? null,
