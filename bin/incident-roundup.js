@@ -187,6 +187,16 @@ async function processKind({ kind, identifiers, getName, agentGetter, now }) {
       console.log(`roundup: ${label} suppressed — ghost-override standalone already posted`);
       continue;
     }
+    // Same rationale for thin-gap: a posted thin-gap is already the loudest
+    // possible signal on a low-frequency route (the whole route went silent
+    // for ≥60 min), and the few sub-threshold signals other detectors can
+    // produce on thin routes shouldn't push a second roundup post out the
+    // door covering the same incident.
+    const thinGapAlreadyPosted = signals.some((s) => s.source === 'thin-gap' && s.posted === 1);
+    if (thinGapAlreadyPosted) {
+      console.log(`roundup: ${label} suppressed — thin-gap standalone already posted`);
+      continue;
+    }
     if (total < SCORE_THRESHOLD && !ghostOverride) {
       console.log(
         `roundup: ${label} score=${total.toFixed(2)} sources=${[...bySource.keys()].join(',')} below threshold`,
