@@ -47,6 +47,7 @@ function runFixture(fixture) {
     lon: r.lon,
     rn: r.rn,
     trDr: r.trDr,
+    destination: r.destination,
   }));
   const longLookbackPositions = longRecentObs.map((r) => ({
     ts: r.ts,
@@ -84,6 +85,7 @@ const FP_FIXTURES = [
   'purple-2026-05-13-1950-sedgwick-quincy',
   'purple-2026-05-11-1050-chicago-quincy',
   'purple-2026-05-12-1555-central-noyes',
+  'purple-2026-05-14-1015-howard-belmont',
 ];
 
 for (const name of FP_FIXTURES) {

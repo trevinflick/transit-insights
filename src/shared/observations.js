@@ -183,7 +183,7 @@ function countDistinctTsInBusObservations(sinceTs) {
 function getRecentTrainPositions(sinceTs) {
   return getDb()
     .prepare(`
-    SELECT ts, route AS line, direction AS trDr, vehicle_id AS rn, lat, lon
+    SELECT ts, route AS line, direction AS trDr, vehicle_id AS rn, destination, lat, lon
     FROM observations
     WHERE kind = 'train' AND ts >= ? AND lat IS NOT NULL AND lon IS NOT NULL
   `)

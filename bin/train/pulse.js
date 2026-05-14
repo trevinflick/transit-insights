@@ -611,6 +611,7 @@ async function main() {
       lon: r.lon,
       rn: r.rn,
       trDr: r.trDr,
+      destination: r.destination,
     }));
     const motionMap = classifyTrainMotion({
       line,

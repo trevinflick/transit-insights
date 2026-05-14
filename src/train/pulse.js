@@ -313,6 +313,66 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
       if (!foundDownstream) continue;
     }
 
+    // Service-pattern-terminus veto. The trailing-edge veto above only fires
+    // when no flow exists past the run; the 2026-05-14 Howard→Belmont FP
+    // showed that's not enough. There, a single late-Express deadhead lingered
+    // past Belmont (foundDownstream=true) while the only fresh upstream traffic
+    // was the Linden↔Howard shuttle terminating at Howard — the cold-run entry.
+    // Two disjoint service patterns, with the cold run being the structural gap
+    // between them, not an outage.
+    //
+    // Veto when: in the active-range window, every trDr-matched run with obs
+    // strictly upstream of the cold run carries a destination string equal to
+    // the cold-run entry station (fromStation) — meaning that pattern is *
+    // designed * to stop at the entry — AND at least one trDr-matched run
+    // exists strictly past the run (the structural-gap signature) AND no run
+    // has obs both upstream and at-or-past the run (no traversal in the
+    // window). A real held-train outage doesn't qualify: piled-up trains
+    // approaching the entry carry their normal destination (e.g. "95th/Dan
+    // Ryan"), not the entry station's name.
+    if (trDrFilter && directionHint && Number.isFinite(activeRangeSinceTs)) {
+      const flowIncreasing = directionHint !== 'outbound';
+      const runStats = new Map();
+      for (const p of fresh) {
+        if (p.ts < activeRangeSinceTs) continue;
+        if (p.trDr !== trDrFilter) continue;
+        const { cumDist: along, perpDist } = snapToLineWithPerp(p.lat, p.lon, points, cumDist);
+        if (perpDist > MAX_PERP_FT) continue;
+        let bucket;
+        if (flowIncreasing) {
+          bucket = along < runLoFt ? 'before' : along > runHiFt ? 'after' : 'in';
+        } else {
+          bucket = along > runHiFt ? 'before' : along < runLoFt ? 'after' : 'in';
+        }
+        const r = runStats.get(p.rn) || {
+          before: false,
+          in: false,
+          after: false,
+          destinations: new Set(),
+        };
+        r[bucket] = true;
+        if (p.destination) r.destinations.add(p.destination);
+        runStats.set(p.rn, r);
+      }
+      const strictBefore = [];
+      let strictAfter = 0;
+      let traversed = 0;
+      for (const r of runStats.values()) {
+        if (r.before && (r.in || r.after)) traversed++;
+        else if (r.before) strictBefore.push(r);
+        else if (r.after && !r.in) strictAfter++;
+      }
+      const fromName = fromStation.station.name;
+      const allTerminateAtEntry =
+        strictBefore.length >= 1 &&
+        strictBefore.every(
+          (r) => r.destinations.size > 0 && [...r.destinations].every((d) => d === fromName),
+        );
+      if (traversed === 0 && strictAfter >= 1 && allTerminateAtEntry) {
+        continue;
+      }
+    }
+
     // Terminal-adjacency veto: cold runs sitting at the corridor's terminal-
     // most station with `coldMs` barely clearing the threshold are usually a
     // single missed turnaround on a sparse line, not a real outage. Require a
