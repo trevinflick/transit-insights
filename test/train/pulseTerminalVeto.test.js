@@ -22,12 +22,16 @@ function position(ft, ts) {
 
 // `coldAgoMs` is the age of the most recent observation in the cold zone.
 // Lookback must be wide enough to include those obs.
-function buildBaselineWithCold(coldFromFt, coldToFt, coldAgoMs, lookbackMs) {
+function buildBaselineWithCold(coldFromFt, coldToFt, coldAgoMs, lookbackMs, opts = {}) {
   const now = 1_700_000_000_000;
   const recent = [];
   // Warm bins observed at now-1min and at lookback-2min to satisfy span gate.
+  // `activeMaxFt` defines where current revenue service ends — obs beyond it
+  // are omitted so the active-range corridor clips there (the test's earlier
+  // `corridorBbox` shim used to do this directly).
+  const activeMaxFt = opts.activeMaxFt != null ? opts.activeMaxFt : TOTAL_FT - 4000;
   const oldTs = now - (lookbackMs - 2 * 60 * 1000);
-  for (let ft = 4000; ft <= TOTAL_FT - 4000; ft += 1000) {
+  for (let ft = 4000; ft <= activeMaxFt; ft += 1000) {
     if (ft >= coldFromFt && ft <= coldToFt) continue;
     recent.push(position(ft, oldTs));
     recent.push(position(ft, now - 1 * 60 * 1000));
@@ -38,30 +42,23 @@ function buildBaselineWithCold(coldFromFt, coldToFt, coldAgoMs, lookbackMs) {
   return { now, recent };
 }
 
-function corridorBbox() {
-  const a = pointAtFt(TOTAL_FT, 0);
-  const b = pointAtFt(TOTAL_FT, 50000);
-  return {
-    minLat: Math.min(a.lat, b.lat),
-    maxLat: Math.max(a.lat, b.lat),
-    minLon: -87.66,
-    maxLon: -87.64,
-  };
-}
-
 const LOOKBACK_MS = 40 * 60 * 1000;
 
 test('terminal-adjacent cold run at ~1.1× threshold is vetoed', () => {
   const stations = buildStations(2000);
-  // Cold run at corridor east edge (within 2640ft of S50000), coldMs=22min, threshold=20min
-  const { now, recent } = buildBaselineWithCold(46000, 49000, 22 * 60 * 1000, LOOKBACK_MS);
+  // Cold run at corridor east edge (within 2640ft of S50000), coldMs=22min, threshold=20min.
+  // activeMaxFt=50000 makes the active-range corridor stop there, mirroring
+  // a real-world case where revenue service doesn't extend to TOTAL_FT.
+  const { now, recent } = buildBaselineWithCold(46000, 49000, 22 * 60 * 1000, LOOKBACK_MS, {
+    activeMaxFt: 50000,
+  });
   const { candidates } = detectDeadSegments({
     line: 'red',
     trainLines,
     stations,
     headwayMin: 8,
     now,
-    opts: { recentPositions: recent, corridorBbox: corridorBbox(), lookbackMs: LOOKBACK_MS },
+    opts: { recentPositions: recent, lookbackMs: LOOKBACK_MS },
   });
   assert.equal(candidates.length, 0, 'terminal-adjacent ~1.1x should be vetoed');
 });
@@ -75,7 +72,7 @@ test('terminal-adjacent cold run at 1.5× threshold admits', () => {
     stations,
     headwayMin: 8,
     now,
-    opts: { recentPositions: recent, corridorBbox: corridorBbox(), lookbackMs: LOOKBACK_MS },
+    opts: { recentPositions: recent, lookbackMs: LOOKBACK_MS },
   });
   assert.ok(candidates.length >= 1, 'sustained outage at corridor edge should admit');
 });
@@ -89,7 +86,7 @@ test('mid-line cold run at 1.0× threshold not vetoed', () => {
     stations,
     headwayMin: 8,
     now,
-    opts: { recentPositions: recent, corridorBbox: corridorBbox(), lookbackMs: LOOKBACK_MS },
+    opts: { recentPositions: recent, lookbackMs: LOOKBACK_MS },
   });
   assert.ok(candidates.length >= 1, 'mid-line cold at threshold should admit');
 });
@@ -106,7 +103,6 @@ test('dispatch-continuity: scheduled dispatch suppresses borderline cold', () =>
     now,
     opts: {
       recentPositions: recent,
-      corridorBbox: corridorBbox(),
       lookbackMs: LOOKBACK_MS,
       expectedDispatchesInWindow: 2,
     },
@@ -129,7 +125,6 @@ test('dispatch-continuity does not veto sustained passLong outage', () => {
     now,
     opts: {
       recentPositions: recent,
-      corridorBbox: corridorBbox(),
       lookbackMs: LOOKBACK_MS,
       expectedDispatchesInWindow: 2,
     },

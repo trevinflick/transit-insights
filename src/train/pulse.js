@@ -156,34 +156,53 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
       );
     }
 
-    // Service-corridor clip: when caller passes a corridorBbox derived from
-    // the last several hours of train observations, project its corners onto
-    // the branch and treat any bin outside that trackDist range as "outside
-    // active service" rather than cold. Catches Purple weekend (Linden ↔
-    // Howard only) and any other line where the polyline includes track that
-    // isn't actually being used right now.
+    // Active-service-range clip. Per branch, project all observations from a
+    // short recent window (default 20 min, ignoring trDr — see comment below)
+    // onto the polyline and take the [min, max] along-track span. Bins
+    // outside that span aren't part of current service and are skipped.
+    //
+    // Why all-direction not trDr-matched: Purple's NB Express deadhead trains
+    // travel through the Loop trunk with destination "Linden" / trDr=1, but
+    // once Express service ends both directions go quiet in the Loop trunk
+    // simultaneously. Using all-direction obs lets the range tighten as soon
+    // as the trunk goes quiet — about 20 min after the last train of any
+    // direction passes through — which is what kills the "Sedgwick → Quincy"
+    // FP class. Filtering by trDr would leave SB Express stragglers (trDr=5)
+    // propping up the range for the rest of the rush window.
+    //
+    // Pinned ranges (from prior pulse_state) expand the active range so a
+    // long sustained outage doesn't self-mask once the active range shrinks
+    // past the formerly-active stretch.
+    const activeRangeWindowMs =
+      opts.activeRangeWindowMs != null
+        ? opts.activeRangeWindowMs
+        : Math.max(20 * 60 * 1000, headwayMin != null ? headwayMin * 1.5 * 60 * 1000 : 0);
+    const activeRangeSinceTs = now - activeRangeWindowMs;
+    let activeLo = Infinity;
+    let activeHi = -Infinity;
+    for (const p of fresh) {
+      if (p.ts < activeRangeSinceTs) continue;
+      const { cumDist: along, perpDist } = snapToLineWithPerp(p.lat, p.lon, points, cumDist);
+      if (perpDist > MAX_PERP_FT) continue;
+      if (along < activeLo) activeLo = along;
+      if (along > activeHi) activeHi = along;
+    }
+    const branchDirectionKey = directionKeyFor(branches, branchIdx, directionHint);
+    if (opts.pinnedRanges) {
+      const pin =
+        opts.pinnedRanges instanceof Map
+          ? opts.pinnedRanges.get(branchDirectionKey)
+          : opts.pinnedRanges[branchDirectionKey];
+      if (pin && Number.isFinite(pin.lo) && Number.isFinite(pin.hi)) {
+        if (pin.lo < activeLo) activeLo = pin.lo;
+        if (pin.hi > activeHi) activeHi = pin.hi;
+      }
+    }
     let corridorLo = 0;
     let corridorHi = numBins;
-    if (opts.corridorBbox) {
-      const c = opts.corridorBbox;
-      const corners = [
-        { lat: c.minLat, lon: c.minLon },
-        { lat: c.minLat, lon: c.maxLon },
-        { lat: c.maxLat, lon: c.minLon },
-        { lat: c.maxLat, lon: c.maxLon },
-      ];
-      let minAlong = Infinity;
-      let maxAlong = -Infinity;
-      for (const corner of corners) {
-        const { cumDist: along } = snapToLineWithPerp(corner.lat, corner.lon, points, cumDist);
-        if (along < minAlong) minAlong = along;
-        if (along > maxAlong) maxAlong = along;
-      }
-      if (Number.isFinite(minAlong) && Number.isFinite(maxAlong) && maxAlong > minAlong) {
-        const binLengthFt = totalFt / numBins;
-        corridorLo = Math.max(0, Math.floor(minAlong / binLengthFt));
-        corridorHi = Math.min(numBins, Math.ceil(maxAlong / binLengthFt));
-      }
+    if (Number.isFinite(activeLo) && Number.isFinite(activeHi) && activeHi > activeLo) {
+      corridorLo = Math.max(0, Math.floor(activeLo / binLengthFt));
+      corridorHi = Math.min(numBins, Math.ceil(activeHi / binLengthFt));
     }
 
     let coveredBins = 0;
@@ -240,56 +259,58 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
 
     // Turnaround-tail veto: on round-trip lines (Brown/Orange/Pink/Purple)
     // each branch is filtered by trDr, but Train Tracker flips trDr at the
-    // terminal as trains turn around. The result is that the segment between
-    // the second-to-last station and the terminal sees only brief 1–2 obs
-    // dir-matched windows per inbound train (everything else gets re-tagged
-    // outbound). At off-peak headways that's enough random clustering to
-    // produce 30+ min gaps in the dir-matched feed even though service is
-    // running normally. The geometric terminal-zone clip (terminalZoneFt =
-    // 1500 ft) doesn't help: South Boulevard→Howard on Purple is 0.7 mi, so
-    // the run sits just outside the zone but still names Howard as `to`.
-    // Reject candidates whose named endpoint IS the branch's first or last
-    // station when a trDrFilter is in play — those are tail artifacts, not
-    // service gaps.
+    // terminal as trains turn around. The geometric terminal-zone clip
+    // (terminalZoneFt = 1500 ft) misses cases where the run sits just
+    // outside the zone but still names the branch's first/last station as
+    // `to`. Reject those.
     if (trDrFilter && stationsOnBranch.length >= 2) {
       const branchHead = stationsOnBranch[0].station.name;
       const branchTail = stationsOnBranch[stationsOnBranch.length - 1].station.name;
-      // Mid-polyline turnaround stations: Purple's polyline encodes the full
-      // Linden→Loop express run, but most service is the Linden↔Howard
-      // shuttle that turns around at Howard. So Howard sits in the middle of
-      // the polyline but functions as a real terminus, with the same trDr-
-      // flip dead-zone problem as a true branch tail. Treat it as one for
-      // veto purposes — otherwise we get the South Boulevard→Howard FP
-      // (~0.7 mi north of Howard, just outside terminalZoneFt).
-      const MID_POLYLINE_TURNAROUND_STATIONS = { p: new Set(['Howard']) };
-      const midTurnarounds = MID_POLYLINE_TURNAROUND_STATIONS[line] || new Set();
       if (
         fromStation.station.name === branchHead ||
         toStation.station.name === branchHead ||
         fromStation.station.name === branchTail ||
-        toStation.station.name === branchTail ||
-        midTurnarounds.has(fromStation.station.name) ||
-        midTurnarounds.has(toStation.station.name)
+        toStation.station.name === branchTail
       ) {
         continue;
       }
     }
 
-    // Off-peak Purple south-of-Howard veto. The destination-filter in the
-    // bin script (excludeDestinations: ['Loop']) drops AM-rush SB stragglers
-    // from the corridor bbox, but NB return-to-yard deadheads (destination
-    // Linden / Howard / NULL) still bleed the bbox south through the Loop
-    // trunk for hours into midday — producing FPs like the 2026-05-11
-    // 10:50 AM Chicago→Quincy post. Off-peak Purple service is shuttle-only
-    // (Linden↔Howard), so any cold-run candidate with an endpoint south of
-    // Howard is by definition not a real outage. Howard-as-endpoint is
-    // already covered by MID_POLYLINE_TURNAROUND_STATIONS above, so strict
-    // `<` is fine here.
-    if (line === 'p' && opts.purpleOffPeak) {
-      const HOWARD_LAT = 42.01906;
-      if (fromStation.station.lat < HOWARD_LAT || toStation.station.lat < HOWARD_LAT) {
-        continue;
+    // Trailing-edge veto: on a direction-filtered branch, a cold run that
+    // has no dir-matched obs `downstream` of it (toward where trains exit
+    // the run) in the active-range window is not an outage — it's the
+    // trailing edge of where service is currently flowing. Two cases this
+    // catches that nothing else does:
+    //   (1) Mid-polyline turnarounds: Purple's polyline encodes the full
+    //       Linden→Loop run but most off-peak service is the Linden↔Howard
+    //       shuttle. On the outbound branch (trDr=1, toward Linden), trains
+    //       finishing their NB run near Linden flip to trDr=5 as they turn
+    //       around, leaving Central/Noyes/Davis with no recent trDr=1 obs
+    //       downstream (toward Linden) — the 2026-05-12 Central→Noyes FP.
+    //   (2) End-of-service for an express overlay: PM Express ends ~6:55 PM,
+    //       so by ~7:30 PM there are no trDr=1 obs in the Loop trunk
+    //       downstream of any Loop-trunk cold run. The active-range clip
+    //       above usually catches this first, but the trailing-edge veto is
+    //       a robust backstop when the active range is still wide due to a
+    //       single late straggler.
+    // Downstream depends on flow direction: outbound flows decreasing
+    // cumDist (exits at runLoFt), inbound flows increasing cumDist (exits
+    // at runHiFt). The veto skips lines with no directionHint (Blue/Green-
+    // style bidirectional branches) because there's no single downstream.
+    if (trDrFilter && directionHint && Number.isFinite(activeRangeSinceTs)) {
+      const flowIncreasing = directionHint !== 'outbound';
+      let foundDownstream = false;
+      for (const p of fresh) {
+        if (p.ts < activeRangeSinceTs) continue;
+        if (p.trDr !== trDrFilter) continue;
+        const { cumDist: along, perpDist } = snapToLineWithPerp(p.lat, p.lon, points, cumDist);
+        if (perpDist > MAX_PERP_FT) continue;
+        if (flowIncreasing ? along > runHiFt : along < runLoFt) {
+          foundDownstream = true;
+          break;
+        }
       }
+      if (!foundDownstream) continue;
     }
 
     // Terminal-adjacency veto: cold runs sitting at the corridor's terminal-

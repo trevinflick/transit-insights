@@ -100,20 +100,6 @@ function chicagoWeekdayNow(now = new Date()) {
   }).format(now);
 }
 
-// Purple Express runs only weekday rush hours (~5:08–9:25 AM, ~2:05–6:55 PM
-// per CTA's published schedule). Outside that window, leftover Loop-bound
-// observations (deadhead trips, end-of-rush stragglers) bleed into the
-// corridor bbox and cause Sedgwick→Quincy-style FPs even with a 90-min
-// corridor lookback. This gate is intentionally generous (5–10 AM, 2–8 PM)
-// so a real outage during the schedule edges isn't suppressed; the goal is
-// just to filter clearly-off-hours stragglers.
-function purpleExpressLikelyActive(now = new Date()) {
-  const wd = chicagoWeekdayNow(now);
-  if (wd === 'Sat' || wd === 'Sun') return false;
-  const h = chicagoHourNow(now);
-  return (h >= 5 && h < 10) || (h >= 14 && h < 20);
-}
-
 function slugStation(s) {
   return String(s || '')
     .toLowerCase()
@@ -552,24 +538,14 @@ async function main() {
     }
 
     const recent = allRecent.filter((r) => r.line === line);
-    // Corridor bbox over the last 6 hours — restricts detection to the actual
-    // revenue track so e.g. weekend Purple service (Linden ↔ Howard only)
-    // doesn't read as "cold" against the full Linden→Loop polyline. For
-    // Purple specifically, also drop Loop-bound observations when Express
-    // isn't running: leftover AM-rush stragglers used to extend the corridor
-    // through the Loop trunk for hours into the midday shuttle window
-    // (FP on 2026-05-04 11:10 AM Sedgwick→Quincy, recurred 2026-05-06 same
-    // segment). The destination filter handles that case; the 6h lookback
-    // remains so long real outages stay detectable.
+    // Corridor bbox is still used by the synthetic full-line path to name
+    // endpoints when the line is entirely silent (clipping the polyline to
+    // current revenue track — Purple weekend Linden↔Howard, Yellow shuttle
+    // segment). The detector itself no longer takes a corridorBbox; it
+    // derives an active-range per branch from the last ~20 min of obs
+    // (replaces purpleOffPeak / excludeDestinations / 6 h bbox kludges).
     const CORRIDOR_LOOKBACK_MS = 6 * 60 * 60 * 1000;
-    const purpleOffPeak = line === 'p' && !purpleExpressLikelyActive(new Date(now));
-    const corridorOpts = purpleOffPeak ? { excludeDestinations: ['Loop'] } : undefined;
-    const corridorBbox = getLineCorridorBbox(line, now - CORRIDOR_LOOKBACK_MS, corridorOpts);
-    // A tighter "still warm?" probe: was the line observed recently (60 min)?
-    // The 6 h corridor pretends a line is active if last night's owl service
-    // bled into the window, which let early-morning Purple FPs through. The
-    // cold-start grace really wants "service is currently running," not "ran
-    // sometime today."
+    const corridorBbox = getLineCorridorBbox(line, now - CORRIDOR_LOOKBACK_MS);
     const COLD_START_RECENT_MS = 60 * 60 * 1000;
     const recentlyActive = !!getLineCorridorBbox(line, now - COLD_START_RECENT_MS);
     if (recent.length === 0) {
@@ -642,6 +618,24 @@ async function main() {
       `motion: line=${lineLabel(line)} moving=${motionSummary.moving} stationary=${motionSummary.stationary} unknown=${motionSummary.unknown}`,
     );
 
+    // Pin the active-range corridor to any open pulse_state runs on this
+    // line so a long sustained outage doesn't self-mask once the active
+    // range tightens past the formerly-active stretch (which happens for
+    // any outage lasting > ~20 min).
+    const pinnedRanges = new Map();
+    try {
+      const rows = getDb()
+        .prepare('SELECT direction, run_lo_ft, run_hi_ft FROM pulse_state WHERE line = ?')
+        .all(line);
+      for (const row of rows) {
+        if (row.run_lo_ft != null && row.run_hi_ft != null) {
+          pinnedRanges.set(row.direction, { lo: row.run_lo_ft, hi: row.run_hi_ft });
+        }
+      }
+    } catch (e) {
+      console.warn(`pulse: failed to load pinned ranges for ${lineLabel(line)}: ${e.message}`);
+    }
+
     let detection;
     try {
       detection = detectDeadSegments({
@@ -652,7 +646,6 @@ async function main() {
         now,
         opts: {
           lookbackMs: lineLookbackMs,
-          corridorBbox,
           expectedDispatchesInWindow: dispatchesInWindow,
           recentPositions: motionInputs,
           longLookbackPositions: longRecent.map((r) => ({
@@ -661,7 +654,7 @@ async function main() {
             lon: r.lon,
             trDr: r.trDr,
           })),
-          purpleOffPeak,
+          pinnedRanges,
         },
       });
     } catch (e) {
@@ -969,7 +962,6 @@ function safeHeadway(line) {
 module.exports = {
   chicagoHourNow,
   chicagoWeekdayNow,
-  purpleExpressLikelyActive,
   stableSegmentTag,
   overlapFraction,
 };
