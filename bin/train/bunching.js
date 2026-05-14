@@ -201,8 +201,22 @@ async function main() {
     image,
     text,
     alt,
-    recordPosted: (primary) =>
-      history.recordBunching({ ...baseEvent, posted: true, postUri: primary.uri }),
+    // Also write a posted meta_signal so incident-roundup can correlate
+    // this bunching with other detectors firing on the same line. Severity
+    // scales with vehicle count, ceilinged at 1.0 — 4+ trains piled up is
+    // already loud.
+    recordPosted: (primary) => {
+      history.recordBunching({ ...baseEvent, posted: true, postUri: primary.uri });
+      history.recordMetaSignal({
+        kind: 'train',
+        line: bunch.line,
+        direction: bunch.trDr,
+        source: 'bunching',
+        severity: Math.min(1, bunch.trains.length / 4),
+        detail: { vehicles: bunch.trains.length, nearStop: baseEvent.nearStop },
+        posted: true,
+      });
+    },
     postWithImage,
     postText,
   });

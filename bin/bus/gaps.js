@@ -286,8 +286,21 @@ async function main() {
     image,
     text,
     alt,
-    recordPosted: (primary) =>
-      history.recordGap({ ...baseEvent, posted: true, postUri: primary.uri }),
+    // See train/gaps.js for rationale — write a posted meta_signal so the
+    // incident-roundup's cross-detector correlation can see this gap, not
+    // just the suppressed ones.
+    recordPosted: (primary) => {
+      history.recordGap({ ...baseEvent, posted: true, postUri: primary.uri });
+      history.recordMetaSignal({
+        kind: 'bus',
+        line: gap.route,
+        direction: gap.pid,
+        source: 'gap',
+        severity: Math.min(1, gap.ratio / 4),
+        detail: { ratio: gap.ratio, gapMin: gap.gapMin, nearStop: baseEvent.nearStop },
+        posted: true,
+      });
+    },
     postWithImage,
     postText,
   });

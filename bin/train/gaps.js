@@ -224,8 +224,25 @@ async function main() {
     image,
     text,
     alt,
-    recordPosted: (primary) =>
-      history.recordGap({ ...baseEvent, posted: true, postUri: primary.uri }),
+    // Record both the typed gap_event and a meta_signal — the meta_signal
+    // lets incident-roundup correlate this gap with any other detector that
+    // fires on the same line, even though the gap itself was already posted.
+    // Without it, posted gaps disappear from the roundup's view and a real
+    // multi-detector incident on a line can fly under the cross-detector
+    // threshold simply because its loudest signal already had its own post.
+    // Mirrors the pattern already used by ghosts.
+    recordPosted: (primary) => {
+      history.recordGap({ ...baseEvent, posted: true, postUri: primary.uri });
+      recordMetaSignal({
+        kind: 'train',
+        line: gap.line,
+        direction: gap.trDr,
+        source: 'gap',
+        severity: Math.min(1, gap.ratio / 4),
+        detail: { ratio: gap.ratio, gapMin: gap.gapMin, nearStop: baseEvent.nearStop },
+        posted: true,
+      });
+    },
     postWithImage,
     postText,
   });

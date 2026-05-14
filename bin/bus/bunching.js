@@ -292,8 +292,19 @@ async function main() {
     image,
     text,
     alt,
-    recordPosted: (primary) =>
-      history.recordBunching({ ...baseEvent, posted: true, postUri: primary.uri }),
+    // See train/bunching.js for rationale.
+    recordPosted: (primary) => {
+      history.recordBunching({ ...baseEvent, posted: true, postUri: primary.uri });
+      history.recordMetaSignal({
+        kind: 'bus',
+        line: bunch.route,
+        direction: bunch.pid,
+        source: 'bunching',
+        severity: Math.min(1, bunch.vehicles.length / 4),
+        detail: { vehicles: bunch.vehicles.length, nearStop: baseEvent.nearStop },
+        posted: true,
+      });
+    },
     postWithImage,
     postText,
   });
