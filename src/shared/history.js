@@ -263,6 +263,20 @@ function db() {
   if (!alertCols.includes('cta_event_end_ts')) {
     _db.exec('ALTER TABLE alert_posts ADD COLUMN cta_event_end_ts INTEGER');
   }
+  // CTA sometimes posts EventStart/EventEnd as date-only strings (e.g.
+  // "2026-05-25") rather than full timestamps. We parse those to end-of-day
+  // so any time-math still works, but track the date-only origin so the UI
+  // can render "Sun May 25" without a misleading 11:59 PM. Stored as 0/1.
+  if (!alertCols.includes('cta_event_start_is_date_only')) {
+    _db.exec(
+      'ALTER TABLE alert_posts ADD COLUMN cta_event_start_is_date_only INTEGER NOT NULL DEFAULT 0',
+    );
+  }
+  if (!alertCols.includes('cta_event_end_is_date_only')) {
+    _db.exec(
+      'ALTER TABLE alert_posts ADD COLUMN cta_event_end_is_date_only INTEGER NOT NULL DEFAULT 0',
+    );
+  }
   // CTA's own body text for the alert (ShortDescription, falling back to
   // FullDescription at write time). Surfaced verbatim on the public event
   // page so readers see the reroute/closure details CTA published, not just
@@ -381,6 +395,8 @@ function recordAlertSeen(
     affectedDirection,
     ctaEventStartTs,
     ctaEventEndTs,
+    ctaEventStartIsDateOnly,
+    ctaEventEndIsDateOnly,
   },
   now = Date.now(),
 ) {
@@ -389,6 +405,8 @@ function recordAlertSeen(
   const ad = affectedDirection == null ? null : affectedDirection;
   const es = ctaEventStartTs == null ? null : ctaEventStartTs;
   const ee = ctaEventEndTs == null ? null : ctaEventEndTs;
+  const esDate = ctaEventStartIsDateOnly ? 1 : 0;
+  const eeDate = ctaEventEndIsDateOnly ? 1 : 0;
   const sd = shortDescription == null ? null : shortDescription;
   const existing = getAlertPost(alertId);
   if (existing) {
@@ -411,7 +429,9 @@ function recordAlertSeen(
             affected_to_station = COALESCE(?, affected_to_station),
             affected_direction = COALESCE(?, affected_direction),
             cta_event_start_ts = COALESCE(?, cta_event_start_ts),
+            cta_event_start_is_date_only = CASE WHEN ? IS NULL THEN cta_event_start_is_date_only ELSE ? END,
             cta_event_end_ts = COALESCE(?, cta_event_end_ts),
+            cta_event_end_is_date_only = CASE WHEN ? IS NULL THEN cta_event_end_is_date_only ELSE ? END,
             resolved_ts = NULL, resolved_reply_uri = NULL, clear_ticks = 0
         WHERE alert_id = ?
       `)
@@ -425,7 +445,11 @@ function recordAlertSeen(
           at,
           ad,
           es,
+          es,
+          esDate,
           ee,
+          ee,
+          eeDate,
           alertId,
         );
     } else {
@@ -439,7 +463,9 @@ function recordAlertSeen(
             affected_to_station = COALESCE(?, affected_to_station),
             affected_direction = COALESCE(?, affected_direction),
             cta_event_start_ts = COALESCE(?, cta_event_start_ts),
-            cta_event_end_ts = COALESCE(?, cta_event_end_ts)
+            cta_event_start_is_date_only = CASE WHEN ? IS NULL THEN cta_event_start_is_date_only ELSE ? END,
+            cta_event_end_ts = COALESCE(?, cta_event_end_ts),
+            cta_event_end_is_date_only = CASE WHEN ? IS NULL THEN cta_event_end_is_date_only ELSE ? END
         WHERE alert_id = ?
       `)
         .run(
@@ -452,7 +478,11 @@ function recordAlertSeen(
           at,
           ad,
           es,
+          es,
+          esDate,
           ee,
+          ee,
+          eeDate,
           alertId,
         );
     }
@@ -464,8 +494,9 @@ function recordAlertSeen(
       (alert_id, kind, routes, headline, short_description,
        first_seen_ts, last_seen_ts, post_uri,
        affected_from_station, affected_to_station, affected_direction,
-       cta_event_start_ts, cta_event_end_ts)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       cta_event_start_ts, cta_event_start_is_date_only,
+       cta_event_end_ts, cta_event_end_is_date_only)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .run(
       alertId,
@@ -480,7 +511,9 @@ function recordAlertSeen(
       at,
       ad,
       es,
+      esDate,
       ee,
+      eeDate,
     );
 }
 

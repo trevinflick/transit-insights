@@ -125,7 +125,9 @@ async function postNewAlert(alert, agentGetter) {
     affectedToStation: between?.to || null,
     affectedDirection: direction,
     ctaEventStartTs: alert.eventStart ?? null,
+    ctaEventStartIsDateOnly: alert.eventStartIsDateOnly ?? false,
     ctaEventEndTs: alert.eventEnd ?? null,
+    ctaEventEndIsDateOnly: alert.eventEndIsDateOnly ?? false,
   });
 
   const agent = await agentGetter();
@@ -182,7 +184,9 @@ async function postNewAlert(alert, agentGetter) {
     shortDescription: alert.shortDescription || alert.fullDescription || null,
     postUri: result.uri,
     ctaEventStartTs: alert.eventStart ?? null,
+    ctaEventStartIsDateOnly: alert.eventStartIsDateOnly ?? false,
     ctaEventEndTs: alert.eventEnd ?? null,
+    ctaEventEndIsDateOnly: alert.eventEndIsDateOnly ?? false,
   });
 }
 
@@ -252,7 +256,9 @@ async function main() {
           shortDescription: alert.shortDescription || alert.fullDescription || null,
           postUri: null,
           ctaEventStartTs: alert.eventStart ?? null,
+          ctaEventStartIsDateOnly: alert.eventStartIsDateOnly ?? false,
           ctaEventEndTs: alert.eventEnd ?? null,
+          ctaEventEndIsDateOnly: alert.eventEndIsDateOnly ?? false,
         });
       }
       continue;

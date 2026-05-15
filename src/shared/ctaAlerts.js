@@ -66,7 +66,9 @@ function normalizeAlert(raw) {
     severityCss: raw.SeverityCSS ? String(raw.SeverityCSS).toLowerCase() : null,
     impact: raw.Impact ? String(raw.Impact) : null,
     eventStart: raw.EventStart ? parseCtaDate(raw.EventStart) : null,
+    eventStartIsDateOnly: raw.EventStart ? isCtaDateOnly(raw.EventStart) : false,
     eventEnd: raw.EventEnd ? parseCtaDate(raw.EventEnd) : null,
+    eventEndIsDateOnly: raw.EventEnd ? isCtaDateOnly(raw.EventEnd) : false,
     busRoutes,
     trainLines,
     url: raw.AlertURL?.['#cdata-section'] ? raw.AlertURL['#cdata-section'] : raw.AlertURL || null,
@@ -94,26 +96,51 @@ function cleanText(s) {
   return str.replace(/\s+/g, ' ').trim();
 }
 
-// Feed dates may arrive as ISO 8601 ("2026-04-26T06:00:00") or legacy compact
-// ("20260426 06:00:00") — both as America/Chicago wall time. Try DST and
-// standard offsets and pick the one that round-trips back to the same wall
-// time. Returns null on parse failure (no silently-wrong fallback).
+// Feed dates may arrive as ISO 8601 ("2026-04-26T06:00:00"), legacy compact
+// ("20260426 06:00:00"), or date-only ("2026-05-25") — all as America/Chicago
+// wall time. Date-only values are interpreted as the end of that day
+// (23:59:59 Chicago); CTA uses date-only EventEnd to mean "through this
+// calendar day" rather than midnight at the start of it. Callers needing to
+// distinguish date-only inputs (e.g. so the UI can render "Sun May 25"
+// without a misleading 11:59 PM) should pair this with `isCtaDateOnly`.
+// Returns null on parse failure (no silently-wrong fallback).
 function parseCtaDate(s) {
   if (!s) return null;
-  const m = /^(\d{4})-?(\d{2})-?(\d{2})[T\s](\d{2}):(\d{2}):(\d{2})/.exec(s);
-  if (!m) return null;
-  const y = +m[1];
-  const mo = +m[2];
-  const d = +m[3];
-  const h = +m[4];
-  const mi = +m[5];
-  const se = +m[6];
+  let y;
+  let mo;
+  let d;
+  let h;
+  let mi;
+  let se;
+  const full = /^(\d{4})-?(\d{2})-?(\d{2})[T\s](\d{2}):(\d{2}):(\d{2})/.exec(s);
+  if (full) {
+    y = +full[1];
+    mo = +full[2];
+    d = +full[3];
+    h = +full[4];
+    mi = +full[5];
+    se = +full[6];
+  } else {
+    const dateOnly = /^(\d{4})-?(\d{2})-?(\d{2})$/.exec(s);
+    if (!dateOnly) return null;
+    y = +dateOnly[1];
+    mo = +dateOnly[2];
+    d = +dateOnly[3];
+    h = 23;
+    mi = 59;
+    se = 59;
+  }
   const asUtc = Date.UTC(y, mo - 1, d, h, mi, se);
   for (const offsetHours of [5, 6]) {
     const candidate = asUtc + offsetHours * 3600 * 1000;
     if (matchesChicagoWallTime(candidate, y, mo, d, h)) return candidate;
   }
   return null;
+}
+
+function isCtaDateOnly(s) {
+  if (!s) return false;
+  return /^\d{4}-?\d{2}-?\d{2}$/.test(String(s).trim());
 }
 
 function matchesChicagoWallTime(ms, y, mo, d, h) {
@@ -383,6 +410,7 @@ module.exports = {
   extractDirection,
   isSignificantAlert,
   parseCtaDate,
+  isCtaDateOnly,
   cleanText,
   MAJOR_PATTERNS,
   MINOR_PATTERNS,

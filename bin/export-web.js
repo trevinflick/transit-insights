@@ -41,7 +41,8 @@ function main() {
         first_seen_ts, last_seen_ts, resolved_ts,
         post_uri, resolved_reply_uri,
         affected_from_station, affected_to_station, affected_direction,
-        cta_event_start_ts, cta_event_end_ts
+        cta_event_start_ts, cta_event_end_ts,
+        cta_event_start_is_date_only, cta_event_end_is_date_only
        FROM alert_posts
        ORDER BY first_seen_ts DESC`,
     )
@@ -164,6 +165,11 @@ function main() {
       // later scrubs the alert from their `?alertid=` lookup.
       cta_event_start_ts: row.cta_event_start_ts ?? null,
       cta_event_end_ts: row.cta_event_end_ts ?? null,
+      // CTA sometimes posts EventStart/EventEnd as date-only ("2026-05-25").
+      // We store those as end-of-day Chicago time but keep this flag so the
+      // UI can render "Sun May 25" without an artificial 11:59 PM.
+      cta_event_start_is_date_only: row.cta_event_start_is_date_only === 1,
+      cta_event_end_is_date_only: row.cta_event_end_is_date_only === 1,
     })),
     observations: observations.map((row) => ({
       id: row.id,
