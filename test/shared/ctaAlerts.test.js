@@ -726,6 +726,31 @@ test('extractMentionedStations: unresolved mention is dropped, not guessed', () 
   );
 });
 
+test('extractMentionedStations: branch alias resolves Western(Congress) → Forest Park branch', () => {
+  // CTA still uses "Congress" — the legacy name for the Forest Park branch —
+  // inside its parenthetical disambiguators. Without the branch-alias tier,
+  // a same-base two-branch station (Western Blue) is unresolvable from CTA's
+  // own text.
+  assert.deepEqual(
+    extractMentionedStations(
+      "O'Hare-bound Blue Line trains are running with significant delays following an earlier delay at Western(Congress).",
+      'blue',
+    ),
+    ['Western (Blue - Forest Park Branch)'],
+  );
+});
+
+test("extractMentionedStations: branch alias resolves Western(O'Hare) → O'Hare branch", () => {
+  // Symmetric case: same base, opposite branch hint.
+  assert.deepEqual(
+    extractMentionedStations(
+      "Forest Park-bound Blue Line trains are running with delays at Western(O'Hare).",
+      'blue',
+    ),
+    ["Western (Blue - O'Hare Branch)"],
+  );
+});
+
 test('extractMentionedStations: empty/missing text/line → []', () => {
   assert.deepEqual(extractMentionedStations(null, 'red'), []);
   assert.deepEqual(extractMentionedStations('Delays at Monroe.', null), []);

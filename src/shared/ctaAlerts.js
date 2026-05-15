@@ -258,7 +258,7 @@ function extractDirection(text, line = null) {
 // only to indicate train direction don't get captured. Capture group runs
 // until punctuation or a follow-on clause keyword (due, because, while, …).
 const IMPACT_CONTEXT_RE =
-  /\b(?:at|near)\s+([A-Z][A-Za-z0-9./&\-() ]+?)(?=\s*[.,;!]|\s+(?:due|because|while|after|following|crews|station|stations|stop|stops|toward|with)\b|$)/g;
+  /\b(?:at|near)\s+([A-Z][A-Za-z0-9./&\-()' ]+?)(?=\s*[.,;!]|\s+(?:due|because|while|after|following|crews|station|stations|stop|stops|toward|with)\b|$)/g;
 
 function normalizeStationKey(s) {
   return (
@@ -272,10 +272,27 @@ function normalizeStationKey(s) {
   );
 }
 
+// Map the colloquial / legacy branch labels CTA still uses inside its
+// parenthetical disambiguators to a substring that will appear in the roster's
+// canonical branch label. CTA writes "Western(Congress)" — the Forest Park
+// branch's pre-2026 name — but our roster carries "Western (Blue - Forest
+// Park Branch)". Without this map a same-base, two-branch station like
+// Western (Blue) is unresolvable from CTA's text. Keys are lowercase, values
+// are matched as substrings against the roster's parenthetical (also
+// lowercased), so partial matches like 'forest park' → 'blue - forest park
+// branch' work without enumerating every roster string.
+const BRANCH_ALIASES = {
+  congress: 'forest park',
+  ohare: 'ohare',
+  "o'hare": 'ohare',
+};
+
 // Resolve a free-text station mention to a canonical name from the roster,
 // scoped to the alert's line so "Halsted" on Orange doesn't bleed into Blue.
-// Tiered: exact (normalized) → base name without parenthetical disambiguator.
-// Returns the canonical station name or null.
+// Tiered: exact (normalized) → base name without parenthetical disambiguator
+// → base + branch-alias hint pulled from a parenthetical the candidate
+// carries (Western(Congress) → Western on Blue with branch matching 'forest
+// park'). Returns the canonical station name or null.
 function resolveStationOnLine(candidate, line, stations = trainStations) {
   if (!candidate || !line) return null;
   const target = normalizeStationKey(candidate);
@@ -287,6 +304,32 @@ function resolveStationOnLine(candidate, line, stations = trainStations) {
   for (const s of onLine) {
     const base = s.name.split(' (')[0];
     if (normalizeStationKey(base) === target) return s.name;
+  }
+  // Branch-alias tier: peel "Western(Congress)" into base="western" + hint
+  // "congress", translate the hint via BRANCH_ALIASES, and pick the on-line
+  // station whose canonical parenthetical contains the translated hint.
+  const parenMatch = /^(.*?)\s*\(([^)]+)\)\s*$/.exec(candidate);
+  if (parenMatch) {
+    const baseTarget = normalizeStationKey(parenMatch[1]);
+    const hintRaw = parenMatch[2]
+      .toLowerCase()
+      .replace(/[\s-]+/g, '')
+      .replace(/branch$/, '');
+    const hint = BRANCH_ALIASES[hintRaw] ?? hintRaw;
+    if (baseTarget && hint) {
+      // Strip non-alphanumerics on both sides so "o'hare" matches "ohare"
+      // and "forest park" matches "forestpark"; the substring check is
+      // forgiving without enumerating apostrophe/space variants.
+      const flatten = (str) => str.toLowerCase().replace(/[^a-z0-9]+/g, '');
+      const flatHint = flatten(hint);
+      for (const s of onLine) {
+        const sParen = /\(([^)]+)\)/.exec(s.name);
+        if (!sParen) continue;
+        const sBase = s.name.split(' (')[0];
+        if (normalizeStationKey(sBase) !== baseTarget) continue;
+        if (flatten(sParen[1]).includes(flatHint)) return s.name;
+      }
+    }
   }
   return null;
 }
