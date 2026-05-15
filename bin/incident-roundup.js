@@ -285,13 +285,16 @@ async function sweepResolutions({ kind, getName, agentGetter, now }) {
     const { total } = scoreSignals(signals);
     const label = kind === 'bus' ? `bus/${row.line}` : lineLabel(row.line);
     if (total >= RESOLVE_SCORE_THRESHOLD) {
-      // Score still elevated → reset the consecutive-clear counter.
-      if (row.clear_ticks !== 0) updateRoundupClearTicks(row.id, 0);
+      // Score still elevated → reset the consecutive-clear counter (the
+      // helper also clears pending_resolved_ts so the next clean run picks
+      // up its own first-tick stamp).
+      if (row.clear_ticks !== 0) updateRoundupClearTicks(row.id, 0, now);
       continue;
     }
     const newClearTicks = (row.clear_ticks || 0) + 1;
     if (newClearTicks < RESOLVE_MIN_CLEAR_TICKS) {
-      updateRoundupClearTicks(row.id, newClearTicks);
+      // First-tick stamping happens inside the helper via COALESCE on now.
+      updateRoundupClearTicks(row.id, newClearTicks, now);
       console.log(
         `roundup-resolve: ${label} clear tick ${newClearTicks}/${RESOLVE_MIN_CLEAR_TICKS} (score=${total.toFixed(2)})`,
       );

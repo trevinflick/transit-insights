@@ -285,6 +285,7 @@ async function main() {
   }
 
   const unresolved = listUnresolvedAlerts(KIND);
+  const sweepNow = Date.now();
   for (const row of unresolved) {
     if (activeIds.has(row.alert_id)) {
       if (!DRY_RUN && row.clear_ticks > 0) resetAlertClearTicks(row.alert_id);
@@ -313,7 +314,10 @@ async function main() {
       );
       continue;
     }
-    const next = incrementAlertClearTicks(row.alert_id);
+    // Pass sweepNow so the helper backdates pending_resolved_ts to this
+    // tick (the first time CTA's feed didn't include the alert), not the
+    // future threshold-tick when resolution actually posts.
+    const next = incrementAlertClearTicks(row.alert_id, sweepNow);
     if (next < ALERT_CLEAR_TICKS) {
       console.log(`Alert ${row.alert_id} missing tick ${next}/${ALERT_CLEAR_TICKS}`);
       continue;

@@ -161,7 +161,7 @@ test('listUnresolvedAlerts excludes resolved rows', () => {
   }
 });
 
-test('two-tick resolution gating: increment then post when threshold met', () => {
+test('resolution gating: increments below threshold, posts at threshold', () => {
   const { history, cleanup } = loadHistoryWithDb(freshDbPath());
   try {
     history.recordAlertSeen({
@@ -171,10 +171,70 @@ test('two-tick resolution gating: increment then post when threshold met', () =>
       headline: 'h',
       postUri: 'at://x/y/z',
     });
-    const first = history.incrementAlertClearTicks('a1');
-    assert.ok(first < history.ALERT_CLEAR_TICKS, 'first miss should not be enough');
-    const second = history.incrementAlertClearTicks('a1');
-    assert.ok(second >= history.ALERT_CLEAR_TICKS, 'second miss should reach the threshold');
+    let n = 0;
+    for (let i = 1; i < history.ALERT_CLEAR_TICKS; i++) {
+      n = history.incrementAlertClearTicks('a1');
+      assert.ok(n < history.ALERT_CLEAR_TICKS, `tick ${i} should not be enough`);
+    }
+    n = history.incrementAlertClearTicks('a1');
+    assert.ok(n >= history.ALERT_CLEAR_TICKS, 'threshold tick should reach the threshold');
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolved_ts backdates to first missing tick, not threshold tick', () => {
+  const { history, cleanup } = loadHistoryWithDb(freshDbPath());
+  try {
+    history.recordAlertSeen({
+      alertId: 'a1',
+      kind: 'train',
+      routes: 'red',
+      headline: 'h',
+      postUri: 'at://x/y/z',
+    });
+    const firstMissTs = 1_700_000_000_000;
+    // Walk up to (but not over) the threshold, stamping pending_resolved_ts
+    // on the first miss only.
+    for (let i = 0; i < history.ALERT_CLEAR_TICKS - 1; i++) {
+      history.incrementAlertClearTicks('a1', firstMissTs + i * 120_000);
+    }
+    // Threshold tick fires now, far in the future.
+    const thresholdTs = firstMissTs + 999_999_000;
+    history.incrementAlertClearTicks('a1', thresholdTs);
+    history.recordAlertResolved({ alertId: 'a1', replyUri: null }, thresholdTs);
+    const rows = history.listUnresolvedAlerts('train');
+    assert.equal(rows.length, 0, 'alert should be resolved');
+    // Re-read directly since listUnresolvedAlerts filters resolved rows out.
+    const { getAlertPost } = history;
+    const row = getAlertPost('a1');
+    assert.equal(
+      row.resolved_ts,
+      firstMissTs,
+      'resolved_ts should match first miss, not threshold tick',
+    );
+    assert.equal(row.pending_resolved_ts, null, 'pending should be cleared after resolve');
+  } finally {
+    cleanup();
+  }
+});
+
+test('resetAlertClearTicks clears pending_resolved_ts so next clear run gets its own first-tick stamp', () => {
+  const { history, cleanup } = loadHistoryWithDb(freshDbPath());
+  try {
+    history.recordAlertSeen({
+      alertId: 'a1',
+      kind: 'train',
+      routes: 'red',
+      headline: 'h',
+      postUri: 'at://x/y/z',
+    });
+    history.incrementAlertClearTicks('a1', 1000);
+    history.resetAlertClearTicks('a1');
+    const { getAlertPost } = history;
+    assert.equal(getAlertPost('a1').pending_resolved_ts, null);
+    history.incrementAlertClearTicks('a1', 5000);
+    assert.equal(getAlertPost('a1').pending_resolved_ts, 5000);
   } finally {
     cleanup();
   }

@@ -284,6 +284,13 @@ function db() {
   if (!alertCols.includes('short_description')) {
     _db.exec('ALTER TABLE alert_posts ADD COLUMN short_description TEXT');
   }
+  // Backdate support: when the first missing tick fires, stash its timestamp
+  // here. recordAlertResolved promotes it to resolved_ts when the clear-tick
+  // threshold trips, so the recorded resolution time reflects the first tick
+  // CTA dropped the alert, not the threshold tick (~one cadence later).
+  if (!alertCols.includes('pending_resolved_ts')) {
+    _db.exec('ALTER TABLE alert_posts ADD COLUMN pending_resolved_ts INTEGER');
+  }
   const disruptionCols = _db
     .prepare('PRAGMA table_info(disruption_events)')
     .all()
@@ -314,6 +321,16 @@ function db() {
   if (!pulseCols.includes('active_post_ts')) {
     _db.exec('ALTER TABLE pulse_state ADD COLUMN active_post_ts INTEGER');
   }
+  // Backdate support: timestamp of the first clean tick of the current
+  // clear-tick run. postClearReply uses this for the observed-clear row's
+  // ts so the recorded clear lines up with real recovery, not the threshold
+  // tick a couple cadences later.
+  if (!pulseCols.includes('clear_started_ts')) {
+    _db.exec('ALTER TABLE pulse_state ADD COLUMN clear_started_ts INTEGER');
+  }
+  if (!busPulseCols.includes('clear_started_ts')) {
+    _db.exec('ALTER TABLE bus_pulse_state ADD COLUMN clear_started_ts INTEGER');
+  }
   const roundupCols = _db
     .prepare('PRAGMA table_info(roundup_anchors)')
     .all()
@@ -329,6 +346,12 @@ function db() {
   }
   if (!roundupCols.includes('signals')) {
     _db.exec('ALTER TABLE roundup_anchors ADD COLUMN signals TEXT');
+  }
+  // Backdate support: timestamp of the first below-threshold tick of the
+  // current clear-tick run. markRoundupResolved promotes it to resolved_ts
+  // when the threshold trips.
+  if (!roundupCols.includes('pending_resolved_ts')) {
+    _db.exec('ALTER TABLE roundup_anchors ADD COLUMN pending_resolved_ts INTEGER');
   }
   const threadQuoteCols = _db
     .prepare('PRAGMA table_info(thread_quote_posts)')
@@ -377,7 +400,10 @@ function getAlertPost(alertId) {
   return db().prepare('SELECT * FROM alert_posts WHERE alert_id = ?').get(alertId) || null;
 }
 
-const ALERT_CLEAR_TICKS = 2;
+// Bumped to 3 alongside the 2-min alerts cadence — 6 min absent before we
+// post a resolution, still flicker-safe but tighter than the prior 20-min
+// floor. resolved_ts itself is backdated to the first missing tick.
+const ALERT_CLEAR_TICKS = 3;
 // If an alert was previously resolved and we see it active again after this
 // gap, treat the new sighting as a re-published incident and reset tracking.
 const ALERT_FLICKER_RESET_MS = 30 * 60 * 1000;
@@ -518,21 +544,40 @@ function recordAlertSeen(
 }
 
 function recordAlertResolved({ alertId, replyUri }, now = Date.now()) {
+  // Prefer pending_resolved_ts (first missing tick) over now (threshold tick)
+  // so the recorded resolution time is independent of cron cadence.
   db()
-    .prepare('UPDATE alert_posts SET resolved_ts = ?, resolved_reply_uri = ? WHERE alert_id = ?')
+    .prepare(`
+      UPDATE alert_posts
+      SET resolved_ts = COALESCE(pending_resolved_ts, ?),
+          resolved_reply_uri = ?,
+          pending_resolved_ts = NULL
+      WHERE alert_id = ?
+    `)
     .run(now, replyUri || null, alertId);
 }
 
-function incrementAlertClearTicks(alertId) {
+function incrementAlertClearTicks(alertId, now = Date.now()) {
+  // Stamp pending_resolved_ts on the 0→1 transition only. COALESCE keeps an
+  // earlier value if somehow set twice; recordAlertResolved/reset clear it.
   db()
-    .prepare('UPDATE alert_posts SET clear_ticks = clear_ticks + 1 WHERE alert_id = ?')
-    .run(alertId);
+    .prepare(`
+      UPDATE alert_posts
+      SET clear_ticks = clear_ticks + 1,
+          pending_resolved_ts = COALESCE(pending_resolved_ts, ?)
+      WHERE alert_id = ?
+    `)
+    .run(now, alertId);
   const row = db().prepare('SELECT clear_ticks FROM alert_posts WHERE alert_id = ?').get(alertId);
   return row ? row.clear_ticks : 0;
 }
 
 function resetAlertClearTicks(alertId) {
-  db().prepare('UPDATE alert_posts SET clear_ticks = 0 WHERE alert_id = ?').run(alertId);
+  db()
+    .prepare(
+      'UPDATE alert_posts SET clear_ticks = 0, pending_resolved_ts = NULL WHERE alert_id = ?',
+    )
+    .run(alertId);
 }
 
 function listUnresolvedAlerts(kind) {
@@ -625,15 +670,34 @@ function listUnresolvedRoundupAnchors(kind, now = Date.now()) {
     .all(kind, now);
 }
 
-function updateRoundupClearTicks(id, clearTicks) {
-  db().prepare('UPDATE roundup_anchors SET clear_ticks = ? WHERE id = ?').run(clearTicks, id);
+function updateRoundupClearTicks(id, clearTicks, now = Date.now()) {
+  // Reset → null the pending stamp. Advance to ≥1 → set pending if unset
+  // (first tick of the clean run). markRoundupResolved promotes it.
+  if (clearTicks === 0) {
+    db()
+      .prepare(
+        'UPDATE roundup_anchors SET clear_ticks = 0, pending_resolved_ts = NULL WHERE id = ?',
+      )
+      .run(id);
+    return;
+  }
+  db()
+    .prepare(`
+      UPDATE roundup_anchors
+      SET clear_ticks = ?,
+          pending_resolved_ts = COALESCE(pending_resolved_ts, ?)
+      WHERE id = ?
+    `)
+    .run(clearTicks, now, id);
 }
 
 function markRoundupResolved(id, resolutionPostUri, ts = Date.now()) {
   db()
     .prepare(`
       UPDATE roundup_anchors
-      SET resolved_ts = ?, resolution_post_uri = ?
+      SET resolved_ts = COALESCE(pending_resolved_ts, ?),
+          resolution_post_uri = ?,
+          pending_resolved_ts = NULL
       WHERE id = ?
     `)
     .run(ts, resolutionPostUri, id);
@@ -801,14 +865,15 @@ function upsertPulseState({
   postedCooldownKey,
   activePostUri = null,
   activePostTs = null,
+  clearStartedTs = null,
 }) {
   db()
     .prepare(`
     INSERT INTO pulse_state
       (line, direction, run_lo_ft, run_hi_ft, from_station, to_station,
        started_ts, last_seen_ts, consecutive_ticks, clear_ticks, posted_cooldown_key,
-       active_post_uri, active_post_ts)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       active_post_uri, active_post_ts, clear_started_ts)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(line, direction) DO UPDATE SET
       run_lo_ft = excluded.run_lo_ft,
       run_hi_ft = excluded.run_hi_ft,
@@ -820,7 +885,8 @@ function upsertPulseState({
       clear_ticks = excluded.clear_ticks,
       posted_cooldown_key = excluded.posted_cooldown_key,
       active_post_uri = excluded.active_post_uri,
-      active_post_ts = excluded.active_post_ts
+      active_post_ts = excluded.active_post_ts,
+      clear_started_ts = excluded.clear_started_ts
   `)
     .run(
       line,
@@ -836,6 +902,7 @@ function upsertPulseState({
       postedCooldownKey || null,
       activePostUri || null,
       activePostTs || null,
+      clearStartedTs || null,
     );
 }
 
@@ -859,6 +926,7 @@ function upsertBusPulseState({
   affectedPid,
   affectedLoFt,
   affectedHiFt,
+  clearStartedTs = null,
 }) {
   const pid = affectedPid === undefined ? null : affectedPid;
   const lo = affectedLoFt === undefined || affectedLoFt === null ? null : Math.round(affectedLoFt);
@@ -868,8 +936,8 @@ function upsertBusPulseState({
     INSERT INTO bus_pulse_state
       (route, started_ts, last_seen_ts, consecutive_ticks, clear_ticks,
        posted_cooldown_key, active_post_uri, active_post_ts,
-       affected_pid, affected_lo_ft, affected_hi_ft)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       affected_pid, affected_lo_ft, affected_hi_ft, clear_started_ts)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(route) DO UPDATE SET
       started_ts = excluded.started_ts,
       last_seen_ts = excluded.last_seen_ts,
@@ -880,7 +948,8 @@ function upsertBusPulseState({
       active_post_ts = excluded.active_post_ts,
       affected_pid = excluded.affected_pid,
       affected_lo_ft = excluded.affected_lo_ft,
-      affected_hi_ft = excluded.affected_hi_ft
+      affected_hi_ft = excluded.affected_hi_ft,
+      clear_started_ts = excluded.clear_started_ts
   `)
     .run(
       String(route),
@@ -894,6 +963,7 @@ function upsertBusPulseState({
       pid,
       lo,
       hi,
+      clearStartedTs || null,
     );
 }
 

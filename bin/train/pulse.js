@@ -80,8 +80,13 @@ const COLD_HEADWAY_MULT_FOR_LOOKBACK = 2.5;
 // catching the multi-hour shutdown case the synthetic path was built for.
 // See maybeSyntheticFullLineCandidate.
 const SYNTHETIC_HEADWAY_MULT = 3;
-const MIN_CONSECUTIVE_TICKS = 2;
-const CLEAR_TICKS_TO_RESET = 3;
+// Bumped alongside the 2-min pulse cadence: 3 consecutive ticks ≈ 4 min of
+// persistence before posting (was 2 ticks × 5 min = 10 min), and 5 clean
+// ticks ≈ 8 min before the ✅ reply (was 3 × 5 = 15 min). Backdating means
+// the recorded start/clear timestamps still reflect the first/last actual
+// observation, so tightening the thresholds doesn't widen the timing error.
+const MIN_CONSECUTIVE_TICKS = 3;
+const CLEAR_TICKS_TO_RESET = 5;
 const POST_COOLDOWN_MS = 90 * 60 * 1000;
 const MIN_HOUR = 5; // owl service edge cases — wait until daytime patterns kick in
 const MIN_DISTINCT_TS = 3;
@@ -255,33 +260,39 @@ async function handleCandidate(line, direction, candidate, agentGetter, now) {
     console.log(
       `--- DRY RUN pulse ${lineLabel(line)}/${direction} ---\n${text}\n\nAlt: ${alt}\nImage: ${stub}`,
     );
-    recordDisruption({
-      kind: 'train',
-      line,
-      direction,
-      fromStation: candidate.fromStation.name,
-      toStation: candidate.toStation.name,
-      source: candidate.kind === 'held' ? 'observed-held' : 'observed',
-      posted: false,
-      postUri: null,
-      evidence: disruption.evidence,
-    });
+    recordDisruption(
+      {
+        kind: 'train',
+        line,
+        direction,
+        fromStation: candidate.fromStation.name,
+        toStation: candidate.toStation.name,
+        source: candidate.kind === 'held' ? 'observed-held' : 'observed',
+        posted: false,
+        postUri: null,
+        evidence: disruption.evidence,
+      },
+      startedTs,
+    );
     return;
   }
 
   if (!acquireCooldown(cooldownKey, now, POST_COOLDOWN_MS)) {
     console.log(`[${lineLabel(line)}/${direction}] on cooldown ${cooldownKey}, skipping`);
-    recordDisruption({
-      kind: 'train',
-      line,
-      direction,
-      fromStation: candidate.fromStation.name,
-      toStation: candidate.toStation.name,
-      source: candidate.kind === 'held' ? 'observed-held' : 'observed',
-      posted: false,
-      postUri: null,
-      evidence: disruption.evidence,
-    });
+    recordDisruption(
+      {
+        kind: 'train',
+        line,
+        direction,
+        fromStation: candidate.fromStation.name,
+        toStation: candidate.toStation.name,
+        source: candidate.kind === 'held' ? 'observed-held' : 'observed',
+        posted: false,
+        postUri: null,
+        evidence: disruption.evidence,
+      },
+      startedTs,
+    );
     return;
   }
 
@@ -310,17 +321,22 @@ async function handleCandidate(line, direction, candidate, agentGetter, now) {
 
   const result = await postWithImage(agent, text, image, alt, replyRef);
   console.log(`Posted pulse ${lineLabel(line)}/${direction}: ${result.url}`);
-  recordDisruption({
-    kind: 'train',
-    line,
-    direction,
-    fromStation: candidate.fromStation.name,
-    toStation: candidate.toStation.name,
-    source: candidate.kind === 'held' ? 'observed-held' : 'observed',
-    posted: true,
-    postUri: result.uri,
-    evidence: disruption.evidence,
-  });
+  // Backdate to startedTs so the recorded ts reflects the first cold tick,
+  // not the threshold tick a couple cadences later.
+  recordDisruption(
+    {
+      kind: 'train',
+      line,
+      direction,
+      fromStation: candidate.fromStation.name,
+      toStation: candidate.toStation.name,
+      source: candidate.kind === 'held' ? 'observed-held' : 'observed',
+      posted: true,
+      postUri: result.uri,
+      evidence: disruption.evidence,
+    },
+    startedTs,
+  );
   // Pin the canonical post for this outage. Subsequent ticks see active_post_uri
   // and skip; the eventual clear targets this URI directly.
   upsertPulseState({
@@ -344,9 +360,18 @@ async function handleClear(line, direction, agentGetter, now) {
   const prior = getPulseState(line, direction);
   if (!prior) return;
   const clearTicks = (prior.clear_ticks || 0) + 1;
+  // First tick of the clean run gets stamped; subsequent ticks preserve it.
+  // postClearReply reads it for the observed-clear ts so recorded clears
+  // reflect real recovery, not the threshold-tick cadence offset.
+  const clearStartedTs = prior.clear_started_ts || now;
   if (clearTicks >= CLEAR_TICKS_TO_RESET) {
     console.log(`[${lineLabel(line)}/${direction}] cleared after ${clearTicks} clean ticks`);
-    await postClearReply(line, direction, prior, agentGetter);
+    await postClearReply(
+      line,
+      direction,
+      { ...prior, clear_started_ts: clearStartedTs },
+      agentGetter,
+    );
     if (prior.posted_cooldown_key) clearCooldown(prior.posted_cooldown_key);
     clearPulseState(line, direction);
     return;
@@ -355,6 +380,7 @@ async function handleClear(line, direction, agentGetter, now) {
     ...priorToUpsertArgs(prior),
     clearTicks,
     lastSeenTs: now,
+    clearStartedTs,
   });
 }
 
@@ -406,16 +432,22 @@ async function postClearReply(line, direction, prior, agentGetter) {
     ? await postTextWithLinkCard(agent, text, replyRef, link)
     : await postText(agent, text, replyRef);
   console.log(`Posted pulse clear ${lineLabel(line)}/${direction}: ${result.url}`);
-  recordDisruption({
-    kind: 'train',
-    line,
-    direction,
-    fromStation,
-    toStation,
-    source: 'observed-clear',
-    posted: true,
-    postUri: result.uri,
-  });
+  // Backdate to clear_started_ts so the recorded clear matches real recovery,
+  // not the threshold tick. Fallback to Date.now() if prior somehow lacks it
+  // (legacy rows from before the migration).
+  recordDisruption(
+    {
+      kind: 'train',
+      line,
+      direction,
+      fromStation,
+      toStation,
+      source: 'observed-clear',
+      posted: true,
+      postUri: result.uri,
+    },
+    prior.clear_started_ts || Date.now(),
+  );
 }
 
 // Score top-N unresolved alerts by station-overlap with the candidate so a

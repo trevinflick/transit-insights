@@ -57,8 +57,12 @@ const {
 
 const DRY_RUN = process.env.BUS_PULSE_DRY_RUN === '1' || process.argv.includes('--dry-run');
 
-const MIN_CONSECUTIVE_TICKS = 2;
-const CLEAR_TICKS_TO_RESET = 3;
+// Bumped alongside the 2-min pulse cadence: 3 consecutive ticks ≈ 4 min of
+// persistence before posting, 5 clean ticks ≈ 8 min before the ✅ reply.
+// Backdating means the recorded ts still reflects the first/last observation
+// regardless of threshold, so tighter ticks don't widen the timing error.
+const MIN_CONSECUTIVE_TICKS = 3;
+const CLEAR_TICKS_TO_RESET = 5;
 const POST_COOLDOWN_MS = 90 * 60 * 1000;
 const MIN_HOUR = 5;
 const MAX_HOUR = 24;
@@ -220,33 +224,39 @@ async function handleCandidate(candidate, agentGetter, now) {
         )
       : buildBusPostText(candidate, { ctaAlertOpen: ctaAlertOpenInitial });
     console.log(`--- DRY RUN bus pulse ${route} (${isHeld ? 'held' : 'blackout'}) ---\n${text}`);
-    recordDisruption({
-      kind: 'bus',
-      line: route,
-      direction: null,
-      fromStation: null,
-      toStation: null,
-      source: isHeld ? 'observed-held' : 'observed',
-      posted: false,
-      postUri: null,
-      evidence,
-    });
+    recordDisruption(
+      {
+        kind: 'bus',
+        line: route,
+        direction: null,
+        fromStation: null,
+        toStation: null,
+        source: isHeld ? 'observed-held' : 'observed',
+        posted: false,
+        postUri: null,
+        evidence,
+      },
+      startedTs,
+    );
     return;
   }
 
   if (!acquireCooldown(cooldownKey, now, POST_COOLDOWN_MS)) {
     console.log(`[bus/${route}] on cooldown ${cooldownKey}, skipping`);
-    recordDisruption({
-      kind: 'bus',
-      line: route,
-      direction: null,
-      fromStation: null,
-      toStation: null,
-      source: isHeld ? 'observed-held' : 'observed',
-      posted: false,
-      postUri: null,
-      evidence,
-    });
+    recordDisruption(
+      {
+        kind: 'bus',
+        line: route,
+        direction: null,
+        fromStation: null,
+        toStation: null,
+        source: isHeld ? 'observed-held' : 'observed',
+        posted: false,
+        postUri: null,
+        evidence,
+      },
+      startedTs,
+    );
     return;
   }
 
@@ -267,17 +277,22 @@ async function handleCandidate(candidate, agentGetter, now) {
     ? await postWithImage(agent, text, image, alt, replyRef)
     : await postText(agent, text, replyRef);
   console.log(`Posted bus pulse ${route}: ${result.url}`);
-  recordDisruption({
-    kind: 'bus',
-    line: route,
-    direction: null,
-    fromStation: null,
-    toStation: null,
-    source: isHeld ? 'observed-held' : 'observed',
-    posted: true,
-    postUri: result.uri,
-    evidence,
-  });
+  // Backdate to startedTs so the recorded ts is the first cold/held tick,
+  // not the threshold tick.
+  recordDisruption(
+    {
+      kind: 'bus',
+      line: route,
+      direction: null,
+      fromStation: null,
+      toStation: null,
+      source: isHeld ? 'observed-held' : 'observed',
+      posted: true,
+      postUri: result.uri,
+      evidence,
+    },
+    startedTs,
+  );
   upsertBusPulseState({
     route,
     startedTs,
@@ -297,9 +312,13 @@ async function handleClear(route, agentGetter, now) {
   const prior = getBusPulseState(route);
   if (!prior) return;
   const clearTicks = (prior.clear_ticks || 0) + 1;
+  // First clean tick stamps; subsequent ticks preserve. postClearReply
+  // reads it for the observed-clear ts so recorded clears reflect real
+  // recovery, not the threshold-tick cadence offset.
+  const clearStartedTs = prior.clear_started_ts || now;
   if (clearTicks >= CLEAR_TICKS_TO_RESET) {
     console.log(`[bus/${route}] cleared after ${clearTicks} clean ticks`);
-    await postClearReply(route, prior, agentGetter);
+    await postClearReply(route, { ...prior, clear_started_ts: clearStartedTs }, agentGetter);
     if (prior.posted_cooldown_key) clearCooldown(prior.posted_cooldown_key);
     clearBusPulseState(route);
     return;
@@ -319,6 +338,7 @@ async function handleClear(route, agentGetter, now) {
     affectedPid: prior.affected_pid,
     affectedLoFt: prior.affected_lo_ft,
     affectedHiFt: prior.affected_hi_ft,
+    clearStartedTs,
   });
 }
 
@@ -355,16 +375,20 @@ async function postClearReply(route, prior, agentGetter) {
     ? await postTextWithLinkCard(agent, text, replyRef, link)
     : await postText(agent, text, replyRef);
   console.log(`Posted bus pulse clear ${route}: ${result.url}`);
-  recordDisruption({
-    kind: 'bus',
-    line: route,
-    direction: null,
-    fromStation: null,
-    toStation: null,
-    source: 'observed-clear',
-    posted: true,
-    postUri: result.uri,
-  });
+  // Backdate to clear_started_ts so recorded clear ≈ real recovery.
+  recordDisruption(
+    {
+      kind: 'bus',
+      line: route,
+      direction: null,
+      fromStation: null,
+      toStation: null,
+      source: 'observed-clear',
+      posted: true,
+      postUri: result.uri,
+    },
+    prior.clear_started_ts || Date.now(),
+  );
 }
 
 // Find the most relevant open CTA bus alert on this route to thread under.

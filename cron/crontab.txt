@@ -51,12 +51,13 @@
 R=/path/to/cta-insights/bin/cron-run.sh
 
 # --- Trains ---
-# train-alerts staggered to :02 offset so it never collides with train-pulse's
-# */5 schedule — otherwise both see "no thread parent yet" at the same wall
-# minute and post separate top-level posts instead of threading.
-*/5     *  *  *  *   $R train-pulse      bin/train/pulse.js
+# train-pulse on even minutes (0,2,4,...) and train-alerts on odd minutes
+# (1,3,5,...) so they never share a wall minute. Threading invariant: when
+# both run on the same minute they each see "no thread parent yet" and post
+# separate top-level posts instead of replying to one another.
+0-58/2  *  *  *  *   $R train-pulse      bin/train/pulse.js
 4-59/15 *  *  *  *   $R train-bunching   bin/train/bunching.js
-2-59/10 *  *  *  *   $R train-alerts     bin/train/alerts.js
+1-59/2  *  *  *  *   $R train-alerts     bin/train/alerts.js
 7-59/15 *  *  *  *   $R train-gaps       bin/train/gaps.js
 0       */2 *  *  *  $R train-speedmap   bin/train/speedmap.js
 0       */3 *  *  *  $R train-snapshot   bin/train/snapshot.js
@@ -70,11 +71,12 @@ R=/path/to/cta-insights/bin/cron-run.sh
 
 # --- Buses ---
 1-59/20 *  *  *  *   $R bus-bunching     bin/bus/bunching.js
-*/10    *  *  *  *   $R bus-alerts       bin/bus/alerts.js
-# bus-pulse staggered :03 offset so it never collides with bus-alerts'
-# */10 schedule — same threading-safety reasoning as train-alerts vs
-# train-pulse.
-3-58/5  *  *  *  *   $R bus-pulse        bin/bus/pulse.js
+# bus-alerts on even minutes, bus-pulse on odd minutes — same threading-
+# safety reasoning as train-alerts vs train-pulse. Bot accounts differ from
+# the train side, so cross-bot collisions (e.g. bus-pulse + train-alerts both
+# on odd) are fine; the rule is only within a single bot's thread.
+0-58/2  *  *  *  *   $R bus-alerts       bin/bus/alerts.js
+1-59/2  *  *  *  *   $R bus-pulse        bin/bus/pulse.js
 6-59/20 *  *  *  *   $R bus-gaps         bin/bus/gaps.js
 0       */2 *  *  *  $R bus-speedmap     bin/bus/speedmap.js
 7       *  *  *  *   $R bus-ghosts       bin/bus/ghosts.js
