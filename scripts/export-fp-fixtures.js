@@ -34,6 +34,22 @@ const FIXTURES = [
     expectedResult: 'no-candidates',
     note: 'Linden turnaround trDr-flip dead zone; outbound-branch FP',
   },
+  {
+    name: 'purple-2026-05-14-1015-howard-belmont',
+    line: 'p',
+    now: 1778771708572,
+    headwayMin: 10,
+    expectedResult: 'no-candidates',
+    note: 'Inbound express segment cold while shuttles + a few express trains active; FP at 10:15 AM',
+  },
+  {
+    name: 'purple-2026-05-15-1924-howard-armitage',
+    line: 'p',
+    now: 1778891042184,
+    headwayMin: 10.5,
+    expectedResult: 'no-candidates',
+    note: 'PM Express trailing edge on branch-1-inbound; last NB Loop-trunk deadhead cleared, shuttle continues Howard↔Linden, detector still flagged Howard→Armitage cold',
+  },
 ];
 
 const LOOKBACK_MS = 3 * 60 * 60 * 1000; // generous: covers 2h ramp-up + active-range window

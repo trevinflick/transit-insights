@@ -156,19 +156,18 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
       );
     }
 
-    // Active-service-range clip. Per branch, project all observations from a
-    // short recent window (default 20 min, ignoring trDr — see comment below)
-    // onto the polyline and take the [min, max] along-track span. Bins
-    // outside that span aren't part of current service and are skipped.
+    // Active-service-range clip. Per branch, project recent-window obs onto
+    // the polyline and take the [min, max] along-track span. Bins outside
+    // that span aren't part of current service and are skipped.
     //
-    // Why all-direction not trDr-matched: Purple's NB Express deadhead trains
-    // travel through the Loop trunk with destination "Linden" / trDr=1, but
-    // once Express service ends both directions go quiet in the Loop trunk
-    // simultaneously. Using all-direction obs lets the range tighten as soon
-    // as the trunk goes quiet — about 20 min after the last train of any
-    // direction passes through — which is what kills the "Sedgwick → Quincy"
-    // FP class. Filtering by trDr would leave SB Express stragglers (trDr=5)
-    // propping up the range for the rest of the rush window.
+    // For round-trip lines with a trDrFilter, scope to obs matching the
+    // candidate's direction (Bug 16, 2026-05-15 Howard→Armitage FP). The
+    // earlier all-direction approach assumed both directions go quiet
+    // together at end-of-service, but during the ~30-min PM Express
+    // wind-down on Purple, NB returns (trDr=1, dest Linden) keep traversing
+    // the Loop trunk for ~30 min after the last SB Express has cleared.
+    // That propped the SB corridor open and let Howard→Armitage cold runs
+    // post. Per-direction range tightens as soon as the SB pattern stops.
     //
     // Pinned ranges (from prior pulse_state) expand the active range so a
     // long sustained outage doesn't self-mask once the active range shrinks
@@ -182,6 +181,7 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
     let activeHi = -Infinity;
     for (const p of fresh) {
       if (p.ts < activeRangeSinceTs) continue;
+      if (trDrFilter && p.trDr !== trDrFilter) continue;
       const { cumDist: along, perpDist } = snapToLineWithPerp(p.lat, p.lon, points, cumDist);
       if (perpDist > MAX_PERP_FT) continue;
       if (along < activeLo) activeLo = along;
@@ -321,15 +321,22 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
     // Two disjoint service patterns, with the cold run being the structural gap
     // between them, not an outage.
     //
-    // Veto when: in the active-range window, every trDr-matched run with obs
-    // strictly upstream of the cold run carries a destination string equal to
-    // the cold-run entry station (fromStation) — meaning that pattern is *
-    // designed * to stop at the entry — AND at least one trDr-matched run
+    // Veto when: in the active-range window, every *moving* trDr-matched run
+    // with obs strictly upstream of the cold run carries a destination string
+    // equal to the cold-run entry station (fromStation) — meaning that pattern
+    // is *designed* to stop at the entry — AND at least one trDr-matched run
     // exists strictly past the run (the structural-gap signature) AND no run
     // has obs both upstream and at-or-past the run (no traversal in the
     // window). A real held-train outage doesn't qualify: piled-up trains
     // approaching the entry carry their normal destination (e.g. "95th/Dan
     // Ryan"), not the entry station's name.
+    //
+    // Stationary upstream runs (parked/idling at a yard, often mislabeled
+    // with the next assignment's destination) are excluded — they aren't
+    // service. The 2026-05-15 Howard→Armitage FP slipped past the original
+    // form of this veto because a single parked train at Linden carried
+    // dest=Loop, breaking the all-terminate-at-entry predicate.
+    const STATIONARY_FT = 1000; // <~1 station-spacing of along movement = parked
     if (trDrFilter && directionHint && Number.isFinite(activeRangeSinceTs)) {
       const flowIncreasing = directionHint !== 'outbound';
       const runStats = new Map();
@@ -349,18 +356,24 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
           in: false,
           after: false,
           destinations: new Set(),
+          alongMin: Infinity,
+          alongMax: -Infinity,
         };
         r[bucket] = true;
         if (p.destination) r.destinations.add(p.destination);
+        if (along < r.alongMin) r.alongMin = along;
+        if (along > r.alongMax) r.alongMax = along;
         runStats.set(p.rn, r);
       }
       const strictBefore = [];
       let strictAfter = 0;
       let traversed = 0;
       for (const r of runStats.values()) {
+        const moved = r.alongMax - r.alongMin >= STATIONARY_FT;
         if (r.before && (r.in || r.after)) traversed++;
-        else if (r.before) strictBefore.push(r);
-        else if (r.after && !r.in) strictAfter++;
+        else if (r.before) {
+          if (moved) strictBefore.push(r);
+        } else if (r.after && !r.in) strictAfter++;
       }
       const fromName = fromStation.station.name;
       const allTerminateAtEntry =

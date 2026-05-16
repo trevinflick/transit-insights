@@ -86,6 +86,7 @@ const FP_FIXTURES = [
   'purple-2026-05-11-1050-chicago-quincy',
   'purple-2026-05-12-1555-central-noyes',
   'purple-2026-05-14-1015-howard-belmont',
+  'purple-2026-05-15-1924-howard-armitage',
 ];
 
 for (const name of FP_FIXTURES) {
