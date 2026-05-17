@@ -14,7 +14,7 @@ const {
   expectedBusRouteActiveTrips,
   loadIndex,
 } = require('../../src/shared/gtfs');
-const { recordMetaSignal, recordDisruption } = require('../../src/shared/history');
+const { recordMetaSignal, recordDisruption, getDb } = require('../../src/shared/history');
 const { acquireCooldown, isOnCooldown } = require('../../src/shared/state');
 const { loginBus, postText } = require('../../src/bus/bluesky');
 const { buildRollupThread } = require('../../src/shared/post');
@@ -32,6 +32,74 @@ const DAILY_CAP_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 const HEALTH_CHECK_WINDOW_MS = 30 * 60 * 1000;
 const MIN_HEALTHY_SNAPSHOTS = 2;
 const HOUR_MS = 60 * 60 * 1000;
+
+// Max age of a thin-gap firing we'll still post a clear reply for. Beyond
+// this the original thread is too cold for a "buses observed again" reply
+// to read naturally to a follower scrolling by.
+const CLEAR_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+function findUnresolvedThinGaps(now) {
+  return getDb()
+    .prepare(`
+      SELECT d.id, d.ts, d.line AS route, d.post_uri
+      FROM disruption_events d
+      WHERE d.kind = 'bus' AND d.source = 'observed-thin'
+        AND d.posted = 1 AND d.post_uri IS NOT NULL
+        AND d.ts >= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM disruption_events c
+          WHERE c.kind = 'bus' AND c.source = 'observed-clear' AND c.posted = 1
+            AND c.line = d.line AND c.ts >= d.ts
+        )
+      ORDER BY d.ts ASC
+    `)
+    .all(now - CLEAR_LOOKBACK_MS);
+}
+
+function buildClearText(route) {
+  const name = routeNames[route];
+  const label = name ? `#${route} ${name}` : `#${route}`;
+  return `🚌✅ ${label}: buses observed on the route again — earlier thin-service gap has cleared.`;
+}
+
+async function handleClears(now, agentGetter, dryRun) {
+  const open = findUnresolvedThinGaps(now);
+  if (open.length === 0) return;
+  for (const row of open) {
+    const route = row.route;
+    // Any observation strictly after the firing ts counts as recovery. One
+    // tick is enough — these are low-frequency routes, so even a single bus
+    // sighting means real service, not a noisy snapshot.
+    const obs = getBusObservations(route, row.ts + 1);
+    if (!obs || obs.length === 0) continue;
+    const firstObsTs = obs.reduce((m, o) => (o.ts < m ? o.ts : m), obs[0].ts);
+    const text = buildClearText(route);
+    if (dryRun) {
+      console.log(`--- DRY RUN thin-gap clear ${route} ---\n${text}`);
+      continue;
+    }
+    const agent = await agentGetter();
+    const replyRef = await resolveReplyRef(agent, row.post_uri);
+    if (!replyRef) {
+      console.warn(
+        `thin-gaps: could not resolve reply ref for ${row.post_uri} (route ${route}), skipping clear`,
+      );
+      continue;
+    }
+    const result = await postText(agent, text, replyRef);
+    console.log(`Posted thin-gap clear ${route}: ${result.url}`);
+    recordDisruption(
+      {
+        kind: 'bus',
+        line: route,
+        source: 'observed-clear',
+        posted: true,
+        postUri: result.uri,
+      },
+      firstObsTs,
+    );
+  }
+}
 
 function formatLine(event) {
   const name = routeNames[event.route];
@@ -71,6 +139,20 @@ async function main() {
     return;
   }
 
+  const dryRun = !!(argv['dry-run'] || process.env.THIN_GAPS_DRY_RUN);
+  let agentPromise = null;
+  const getAgent = () => {
+    if (!agentPromise) agentPromise = loginBus();
+    return agentPromise;
+  };
+
+  // Clear pass first: resolve any still-open thin-gap firings whose routes
+  // have buses showing up again. Runs before the fire pass so a route that
+  // recovered and then immediately re-broke gets its earlier post tidied
+  // up rather than left dangling. (24h cooldown prevents the re-fire from
+  // landing this same tick anyway.)
+  await handleClears(now, getAgent, dryRun);
+
   const priorHour = new Date(now - HOUR_MS);
   const nextHour = new Date(now + HOUR_MS);
   const drops = [];
@@ -109,7 +191,7 @@ async function main() {
     return;
   }
 
-  if (argv['dry-run'] || process.env.THIN_GAPS_DRY_RUN) {
+  if (dryRun) {
     for (let i = 0; i < posts.length; i++) {
       console.log(`\n--- DRY RUN post ${i + 1}/${posts.length} ---\n${posts[i].text}`);
     }
@@ -150,7 +232,7 @@ async function main() {
     });
   }
 
-  const agent = await loginBus();
+  const agent = await getAgent();
   let replyRef = null;
   let eventCursor = 0;
   for (let i = 0; i < finalPosts.length; i++) {
@@ -180,7 +262,7 @@ async function main() {
   }
 }
 
-module.exports = { formatLine, buildPostThread };
+module.exports = { formatLine, buildPostThread, buildClearText, findUnresolvedThinGaps };
 
 if (require.main === module) {
   runBin(main);
