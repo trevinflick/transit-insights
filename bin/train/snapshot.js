@@ -42,8 +42,9 @@ async function main() {
     new Date(result.endTs),
     windowMin,
     result.initialTrains,
+    result.allTrains,
   );
-  const alt = buildVideoAltText(finalTrains, windowMin);
+  const alt = buildVideoAltText(finalTrains, windowMin, result.allTrains);
 
   console.log(
     `Captured ${result.ticksCaptured} ticks over ${result.elapsedSec}s (${(result.buffer.length / 1024 / 1024).toFixed(1)} MB)`,

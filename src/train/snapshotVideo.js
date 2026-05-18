@@ -229,12 +229,23 @@ async function captureSnapshotVideo(initialTrains, lineColors, trainLines, opts 
     const elapsedSec = Math.round((endTs - startTs) / 1000);
     const finalTrains = snapshots[snapshots.length - 1].trains;
     const initialSnapshotTrains = snapshots[0].trains;
+    // Union of trains seen across the window, deduped by rn. Used for the
+    // per-line breakdown so a Yellow/Purple train that appeared mid-window
+    // but ended service before the final tick still gets counted.
+    const seenByRn = new Map();
+    for (const snap of snapshots) {
+      for (const t of snap.trains) {
+        if (!seenByRn.has(t.rn)) seenByRn.set(t.rn, { rn: t.rn, line: t.line });
+      }
+    }
+    const allTrains = [...seenByRn.values()];
     return {
       buffer,
       ticksCaptured: snapshots.length,
       elapsedSec,
       finalTrains,
       initialTrains: initialSnapshotTrains,
+      allTrains,
       startTs,
       endTs,
     };

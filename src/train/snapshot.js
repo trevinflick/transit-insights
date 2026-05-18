@@ -19,8 +19,11 @@ function buildAltText(trains) {
   return `Map of Chicago showing live positions of ${trains.length} CTA L trains currently in service, colored by line: ${summary}.`;
 }
 
-function buildVideoPostText(trains, startTs, endTs, windowMin, startTrains) {
-  const byLine = countByLine(trains);
+function buildVideoPostText(trains, startTs, endTs, windowMin, startTrains, allTrains) {
+  // Per-line breakdown uses the union of trains seen across the window when
+  // available, so a Yellow/Purple run that started or ended mid-window still
+  // appears. Falls back to final-frame counts.
+  const byLine = countByLine(allTrains || trains);
   const parts = ALL_LINES.map((l) => `${LINE_NAMES[l]} ${byLine.get(l) || 0}`);
   const countLine =
     startTrains && startTrains.length !== trains.length
@@ -29,10 +32,11 @@ function buildVideoPostText(trains, startTs, endTs, windowMin, startTrains) {
   return `🚆 CTA L · ${windowMin}-min timelapse\n${formatTimeCT(startTs)}–${formatTimeCT(endTs)} CT · ${countLine}\n\n${parts.join(' · ')}`;
 }
 
-function buildVideoAltText(trains, windowMin) {
-  const byLine = countByLine(trains);
+function buildVideoAltText(trains, windowMin, allTrains) {
+  const byLine = countByLine(allTrains || trains);
   const summary = ALL_LINES.map((l) => `${byLine.get(l) || 0} ${LINE_NAMES[l]}`).join(', ');
-  return `${windowMin}-minute timelapse of CTA L train movement across Chicago, colored by line. Final frame shows ${trains.length} trains in service: ${summary}.`;
+  const total = (allTrains || trains).length;
+  return `${windowMin}-minute timelapse of CTA L train movement across Chicago, colored by line. ${total} trains appeared during the window: ${summary}.`;
 }
 
 module.exports = {
