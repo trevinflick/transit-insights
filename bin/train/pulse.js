@@ -30,7 +30,13 @@ const {
 } = require('../../src/train/pulse');
 const { detectHeldClusters } = require('../../src/train/heldClusters');
 const { classifyTrainMotion, summarizeMotion } = require('../../src/train/motion');
-const { buildLineBranches } = require('../../src/train/speedmap');
+const { buildLineBranches, snapToLineWithPerp } = require('../../src/train/speedmap');
+const { compassToTrDr, normalizePulseDirection } = require('../../src/shared/trainSegment');
+
+// Mirrors src/train/pulse.js — reject projections > this distance off-branch
+// (off-corridor stray, parallel-branch overlap) when reconciling observations
+// to a stored segment.
+const CLEAR_MAX_PERP_FT = 1500;
 const { getAllTrainPositions, LINE_COLORS, ALL_LINES, lineLabel } = require('../../src/train/api');
 const {
   loginAlerts,
@@ -432,9 +438,29 @@ async function postClearReply(line, direction, prior, agentGetter) {
     ? await postTextWithLinkCard(agent, text, replyRef, link)
     : await postText(agent, text, replyRef);
   console.log(`Posted pulse clear ${lineLabel(line)}/${direction}: ${result.url}`);
-  // Backdate to clear_started_ts so the recorded clear matches real recovery,
-  // not the threshold tick. Fallback to Date.now() if prior somehow lacks it
-  // (legacy rows from before the migration).
+  // Backdate to real recovery: the first dir-matched train observed inside
+  // the cold segment after firing. Closes the up-to-one-cron-tick lag
+  // between actual return and the detector noticing on its next pass.
+  // Falls back to clear_started_ts (then Date.now) when state is missing
+  // run bounds, projection fails to find any qualifying obs, or polyline
+  // build fails — legacy rows + edge cases stay on the old behavior.
+  // pulse_state.direction is 'branch-N-outbound' / 'branch-N-inbound' /
+  // 'all' / 'branch-len{k}-…'. Only the in/out forms map to a trDr; the
+  // others legitimately have no single direction filter and we fall back
+  // to clear_started_ts for those (Yellow, plus multi-branch bidirectional
+  // pulses on red/blue/g).
+  const compass = normalizePulseDirection(direction);
+  const trDr = compass ? compassToTrDr(line, compass) : null;
+  const recordedTs =
+    firstEnteredSegmentTs({
+      line,
+      trDr,
+      runLoFt: prior.run_lo_ft,
+      runHiFt: prior.run_hi_ft,
+      startedTs: prior.started_ts,
+    }) ||
+    prior.clear_started_ts ||
+    Date.now();
   recordDisruption(
     {
       kind: 'train',
@@ -446,8 +472,38 @@ async function postClearReply(line, direction, prior, agentGetter) {
       posted: true,
       postUri: result.uri,
     },
-    prior.clear_started_ts || Date.now(),
+    recordedTs,
   );
+}
+
+function firstEnteredSegmentTs({ line, trDr, runLoFt, runHiFt, startedTs }) {
+  if (!trDr || runLoFt == null || runHiFt == null || !startedTs) return null;
+  const obs = getDb()
+    .prepare(`
+      SELECT ts, lat, lon FROM observations
+      WHERE kind = 'train' AND route = ? AND direction = ?
+        AND lat IS NOT NULL AND lon IS NOT NULL
+        AND ts > ?
+      ORDER BY ts ASC
+    `)
+    .all(String(line), String(trDr), startedTs);
+  if (obs.length === 0) return null;
+  let branches;
+  try {
+    branches = buildLineBranches(trainLines, line);
+  } catch (e) {
+    console.warn(`pulse clear: buildLineBranches failed for ${line}: ${e.message}`);
+    return null;
+  }
+  for (const p of obs) {
+    for (const b of branches) {
+      if (!b.totalFt) continue;
+      const { cumDist: along, perpDist } = snapToLineWithPerp(p.lat, p.lon, b.points, b.cumDist);
+      if (perpDist > CLEAR_MAX_PERP_FT) continue;
+      if (along >= runLoFt && along <= runHiFt) return p.ts;
+    }
+  }
+  return null;
 }
 
 // Score top-N unresolved alerts by station-overlap with the candidate so a

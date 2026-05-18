@@ -385,10 +385,26 @@ async function postClearReply(route, prior, agentGetter) {
   // whole time, they just aren't moving past the cluster.
   const fallbackTs = prior.clear_started_ts || Date.now();
   let recordedTs = fallbackTs;
-  if (!prior.affected_pid && prior.started_ts) {
-    const obs = getBusObservations(route, prior.started_ts + 1);
-    if (obs.length > 0) {
-      recordedTs = obs.reduce((m, o) => (o.ts < m ? o.ts : m), obs[0].ts);
+  if (prior.started_ts) {
+    if (!prior.affected_pid) {
+      const obs = getBusObservations(route, prior.started_ts + 1);
+      if (obs.length > 0) {
+        recordedTs = obs.reduce((m, o) => (o.ts < m ? o.ts : m), obs[0].ts);
+      }
+    } else if (prior.affected_hi_ft != null) {
+      // Held variant: recovery is the first bus on the affected pid observed
+      // past the cluster's hi end — buses are visible throughout the held
+      // state, so "any observation" is meaningless. Direction stores the pid
+      // in the bus observations table.
+      const row = getDb()
+        .prepare(`
+          SELECT MIN(ts) AS ts FROM observations
+          WHERE kind = 'bus' AND route = ? AND direction = ?
+            AND pdist IS NOT NULL AND pdist > ?
+            AND ts > ?
+        `)
+        .get(String(route), String(prior.affected_pid), prior.affected_hi_ft, prior.started_ts);
+      if (row?.ts) recordedTs = row.ts;
     }
   }
   recordDisruption(
