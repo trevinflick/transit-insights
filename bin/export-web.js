@@ -256,8 +256,9 @@ function main() {
       // Absence-style observations (pulse-cold, thin-gap, roundups that bundle
       // them) are detected only once the corridor has *already* been cold for a
       // while — `ts` is when the bot posted, not when the disruption began. We
-      // back-date an inferred start so the reported duration reflects the real
-      // outage length rather than the tiny post-to-resolve window.
+      // back-date the start to the last observed train so the reported duration
+      // reflects the real outage length rather than the tiny post-to-resolve
+      // window.
       //
       // Prefer `minutesSinceLastTrain` (the gap actually observed at post time)
       // over `coldThresholdMin` (the detector's floor) — when the corridor has
@@ -278,8 +279,8 @@ function main() {
             if (m != null && (backdateMin == null || m > backdateMin)) backdateMin = m;
           }
         }
-        // Only emit onset_ts when we genuinely inferred an earlier start; for
-        // non-absence observations the start is just `ts` and onset_ts is null.
+        // Only emit onset_ts when we genuinely back-dated to an earlier start;
+        // for non-absence observations the start is just `ts` and onset_ts is null.
         return backdateMin != null ? row.ts - backdateMin * 60_000 : null;
       })();
       return {
@@ -293,10 +294,10 @@ function main() {
         signals, // e.g. ['gap', 'bunching']
         evidence: row._evidence ?? null,
         ts: row.ts,
-        // Inferred disruption start for absence-style observations, back-dated
-        // from `ts` by the observed cold gap (see onsetTs above). Null when the
-        // start wasn't inferred — consumers then fall back to `ts`. Kept as a
-        // distinct field so `ts` always matches the post_url's actual post time.
+        // Disruption start for absence-style observations, back-dated from `ts`
+        // to the last observed train (see onsetTs above). Null when not
+        // back-dated — consumers then fall back to `ts`. Kept as a distinct
+        // field so `ts` always matches the post_url's actual post time.
         onset_ts: onsetTs,
         resolved_ts: row.resolved_ts ?? null,
         // duration_ms reconciles with the published timestamps:
