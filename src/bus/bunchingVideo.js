@@ -29,6 +29,65 @@ const DEFAULT_FRAMERATE = 16; // ~4s clip at 16× speed
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Fill interior gaps where CTA dropped a vehicle for one or more polls mid-clip
+// and then resumed reporting. Without this the marker freezes then jumps (a
+// single missed poll) or vanishes entirely and pops back in (multi-poll gap)
+// — see the route 3 #8940 ~2 min dropout. Synthesizes the missing snapshots by
+// interpolating along the polyline (or straight line when no polyline) between
+// the bracketing sightings so the bus glides through the gap. Only interior
+// gaps are filled; a trailing gap stays a tail drop, rendered as a fading ghost
+// below. Mutates `snapshots` in place; returns the number of frames filled.
+function fillInteriorGaps(snapshots, { linePts, lineCum, hasPolyline }) {
+  const idxByVid = new Map(); // vid → ascending [snapshotIdx] where present
+  for (let s = 0; s < snapshots.length; s++) {
+    for (const v of snapshots[s].vehicles) {
+      if (!idxByVid.has(v.vid)) idxByVid.set(v.vid, []);
+      idxByVid.get(v.vid).push(s);
+    }
+  }
+  let filled = 0;
+  for (const [vid, idxs] of idxByVid) {
+    for (let p = 0; p + 1 < idxs.length; p++) {
+      const ia = idxs[p];
+      const ib = idxs[p + 1];
+      if (ib === ia + 1) continue; // adjacent — no gap
+      const va = snapshots[ia].vehicles.find((v) => v.vid === vid);
+      const vb = snapshots[ib].vehicles.find((v) => v.vid === vid);
+      const tA = snapshots[ia].ts;
+      const tB = snapshots[ib].ts;
+      for (let m = ia + 1; m < ib; m++) {
+        const f = tB > tA ? (snapshots[m].ts - tA) / (tB - tA) : (m - ia) / (ib - ia);
+        let lat;
+        let lon;
+        let track;
+        if (hasPolyline && va.track != null && vb.track != null) {
+          track = va.track + (vb.track - va.track) * f;
+          const pt = pointAlongLine(linePts, lineCum, track);
+          if (pt) {
+            lat = pt.lat;
+            lon = pt.lon;
+          }
+        }
+        if (lat == null) {
+          lat = va.lat + (vb.lat - va.lat) * f;
+          lon = va.lon + (vb.lon - va.lon) * f;
+        }
+        snapshots[m].vehicles.push({
+          vid,
+          lat,
+          lon,
+          track,
+          heading: va.heading,
+          pdist: va.pdist,
+          filled: true,
+        });
+        filled++;
+      }
+    }
+  }
+  return filled;
+}
+
 async function captureBunchingVideo(bunch, pattern, opts = {}) {
   const tickMs = opts.tickMs || DEFAULT_TICK_MS;
   const ticks = opts.ticks || DEFAULT_TICKS;
@@ -107,6 +166,8 @@ async function captureBunchingVideo(bunch, pattern, opts = {}) {
       }
     }
   }
+
+  fillInteriorGaps(snapshots, { linePts, lineCum, hasPolyline });
 
   const extraVehicles = snapshots.slice(1).flatMap((s) => s.vehicles);
   const view = computeBunchingView(bunch, pattern, extraVehicles);
@@ -366,4 +427,4 @@ async function captureBunchingVideo(bunch, pattern, opts = {}) {
   }
 }
 
-module.exports = { captureBunchingVideo };
+module.exports = { captureBunchingVideo, fillInteriorGaps };
