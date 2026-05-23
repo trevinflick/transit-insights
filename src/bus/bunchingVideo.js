@@ -39,12 +39,27 @@ async function captureBunchingVideo(bunch, pattern, opts = {}) {
 
   const bunchVids = new Set(bunch.vehicles.map((v) => v.vid));
   const snapshots = [{ ts: Date.now(), vehicles: bunch.vehicles }];
+  // vid → first sighting under a different pid. A bunched vid that reappears on
+  // another pid has turned around at a terminal (CTA reassigns the trip), not
+  // lost signal — the renderer uses this to show a turnaround, not a ghost.
+  const turnedAround = new Map();
 
   for (let i = 1; i < ticks; i++) {
     await sleep(tickMs);
     let vehicles = [];
+    const tickTs = Date.now();
     try {
       const all = await getVehicles([bunch.route], { record: false });
+      for (const v of all) {
+        if (
+          bunchVids.has(v.vid) &&
+          v.pid != null &&
+          v.pid !== bunch.pid &&
+          !turnedAround.has(v.vid)
+        ) {
+          turnedAround.set(v.vid, { ts: tickTs, vehicle: v });
+        }
+      }
       vehicles = all.filter((v) => v.pid === bunch.pid && bunchVids.has(v.vid));
     } catch (e) {
       console.warn(`video capture tick ${i}: fetch failed — ${e.message}`);
@@ -54,7 +69,7 @@ async function captureBunchingVideo(bunch, pattern, opts = {}) {
       console.log(`video capture: all bunched buses dropped at tick ${i}, stopping`);
       break;
     }
-    snapshots.push({ ts: Date.now(), vehicles });
+    snapshots.push({ ts: tickTs, vehicles });
   }
 
   if (snapshots.length < 2) return null;
@@ -131,8 +146,7 @@ async function captureBunchingVideo(bunch, pattern, opts = {}) {
       }
     }
     // Terminal-arrival classifier: bus polylines are end-to-end (no Loop
-    // round-trip), so both endpoints are real terminals. A drop within the
-    // turnaround radius of either end is "arrived," not "lost signal."
+    // round-trip), so both endpoints are real terminals.
     let turnaroundEnd = null;
     if (hasPolyline) {
       const ends = [
@@ -142,12 +156,22 @@ async function captureBunchingVideo(bunch, pattern, opts = {}) {
           lon: pattern.points[pattern.points.length - 1].lon,
         },
       ];
+      let bestEnd = null;
+      let bestD = Number.POSITIVE_INFINITY;
       for (const end of ends) {
         const d = haversineFt({ lat: lsv.lat, lon: lsv.lon }, end);
-        if (d <= TURNAROUND_NEAR_TERMINAL_FT) {
-          turnaroundEnd = end;
-          break;
+        if (d < bestD) {
+          bestD = d;
+          bestEnd = end;
         }
+      }
+      // A vid that reappeared under a different pid has provably turned around
+      // at a terminal — classify it as a turnaround regardless of how far short
+      // of the end vertex it stopped reporting on this pattern (CTA reassigns
+      // the trip before the bus crawls the final layover stretch). Otherwise
+      // fall back to the proximity test against the nearer endpoint.
+      if (turnedAround.has(vid) || bestD <= TURNAROUND_NEAR_TERMINAL_FT) {
+        turnaroundEnd = bestEnd;
       }
     }
     tailDrops.set(vid, {
