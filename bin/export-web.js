@@ -448,54 +448,37 @@ function main() {
   const out = {
     generated_at: Date.now(),
     data_start_ts: dataStart.min_ts ?? null,
-    alerts: builtAlerts,
-    observations: builtObservations,
     incidents,
   };
 
   const outputPath = process.argv[2];
 
   if (outputPath) {
-    // Only write if the data actually changed — generated_at updates every run
-    // so we compare only alerts + observations to avoid spurious git commits.
-    // last_seen_ts ticks forward on every re-sighting of an active alert; the
-    // web UI only uses it as a coarse fallback bound (incidents.js, 2h buffer),
-    // so excluding it from the comparison avoids commits with no real change.
-    const stripVolatile = (alert) => {
-      const { last_seen_ts: _ignored, ...rest } = alert;
-      return rest;
-    };
+    // Only write if the data actually changed — generated_at updates every run,
+    // so compare just the incidents (+ data_start_ts) to avoid spurious git
+    // commits. incidents carry no volatile per-run fields (last_seen_ts is
+    // deliberately omitted from the cta block), so a direct compare is stable:
+    // re-sighting an unchanged active alert produces byte-identical incidents.
     const dataOnly = JSON.stringify({
       data_start_ts: out.data_start_ts,
-      alerts: out.alerts.map(stripVolatile),
-      observations: out.observations,
+      incidents: out.incidents,
     });
     let existingDataOnly = null;
-    let existingHasIncidents = false;
     if (Fs.existsSync(outputPath)) {
       try {
         const existing = JSON.parse(Fs.readFileSync(outputPath, 'utf8'));
-        existingHasIncidents = Array.isArray(existing.incidents);
         existingDataOnly = JSON.stringify({
           data_start_ts: existing.data_start_ts,
-          alerts: (existing.alerts || []).map(stripVolatile),
-          observations: existing.observations,
+          incidents: existing.incidents,
         });
       } catch (_) {}
     }
-    // Bootstrap: even when alerts/observations are byte-identical, force one
-    // write if the existing file predates the incidents[] array, so the new
-    // shape lands on first run. incidents derive deterministically from
-    // alerts+observations, so the source-array comparison is a sufficient
-    // change proxy on every subsequent run.
-    if (dataOnly === existingDataOnly && existingHasIncidents) {
+    if (dataOnly === existingDataOnly) {
       console.error('export-web: no data changes, skipping write');
       return;
     }
     Fs.writeFileSync(outputPath, JSON.stringify(out, null, 2) + '\n', 'utf8');
-    console.error(
-      `export-web: wrote ${out.alerts.length} alerts, ${out.observations.length} observations to ${outputPath}`,
-    );
+    console.error(`export-web: wrote ${out.incidents.length} incidents to ${outputPath}`);
   } else {
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   }
