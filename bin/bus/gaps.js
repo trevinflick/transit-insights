@@ -8,13 +8,19 @@ const { gaps: gapRoutes } = require('../../src/bus/routes');
 const { detectAllGaps } = require('../../src/bus/gaps');
 const { loadPattern, findNearestStop } = require('../../src/bus/patterns');
 const { renderGapMap } = require('../../src/map');
-const { loginBus, postWithImage, postText } = require('../../src/bus/bluesky');
+const { captureBusGapVideo } = require('../../src/bus/gapVideo');
+const { loginBus, postWithImage, postText, postWithVideo } = require('../../src/bus/bluesky');
 const { isOnCooldown } = require('../../src/shared/state');
 const { commitAndPost } = require('../../src/shared/postDetection');
 const { expectedHeadwayMin, loadIndex } = require('../../src/shared/gtfs');
 const history = require('../../src/shared/history');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
-const { buildPostText, buildAltText } = require('../../src/bus/gapPost');
+const {
+  buildPostText,
+  buildAltText,
+  buildGapVideoPostText,
+  buildGapVideoAltText,
+} = require('../../src/bus/gapPost');
 
 const BUS_GAP_DAILY_CAP = 3;
 
@@ -265,6 +271,26 @@ async function main() {
       `gap-${gap.route}-${pattern.direction.toLowerCase()}-${gap.pid}-${Date.now()}.jpg`,
     );
     console.log(`\n--- DRY RUN ---\n${text}\n\nAlt: ${alt}\nImage: ${outPath}`);
+    if (argv.video) {
+      const ticks = argv.ticks ? Number(argv.ticks) : undefined;
+      const tickMs = argv['tick-ms'] ? Number(argv['tick-ms']) : undefined;
+      const interpolate = argv.interpolate ? Number(argv.interpolate) : undefined;
+      console.log(`\nCapturing gap timelapse (ticks=${ticks || 'default'})...`);
+      const video = await captureBusGapVideo(gap, pattern, chosenStop, {
+        ticks,
+        tickMs,
+        interpolate,
+      });
+      if (!video) {
+        console.log('Gap timelapse skipped (gap too deep, bus resolved, or no approach)');
+      } else {
+        const videoPath = writeDryRunAsset(
+          video.buffer,
+          `gap-${gap.route}-${pattern.direction.toLowerCase()}-${gap.pid}-${Date.now()}.mp4`,
+        );
+        console.log(`Video: ${videoPath}\n${buildGapVideoPostText(video)}`);
+      }
+    }
     return;
   }
 
@@ -278,7 +304,7 @@ async function main() {
     ratio: gap.ratio,
     nearStop: chosenStop.stopName,
   };
-  await commitAndPost({
+  const result = await commitAndPost({
     cooldownKeys: [`gap:${gap.pid}`, `gap:route:${gap.route}`],
     forceClearCooldown: cooldownOverridden,
     recordSkip: () => history.recordGap({ ...baseEvent, posted: false }),
@@ -304,6 +330,34 @@ async function main() {
     postWithImage,
     postText,
   });
+  if (!result) return;
+  const { agent, primary } = result;
+
+  // Timelapse reply: the next bus approaching the wait stop. Non-fatal — the
+  // primary gap post already went out. Returns null (no reply) when the gap is
+  // too deep to frame or the bus doesn't close in; those stay a still map.
+  try {
+    console.log('Capturing bus gap timelapse...');
+    const video = await captureBusGapVideo(gap, pattern, chosenStop);
+    if (!video) {
+      console.log('Gap timelapse skipped (gap too deep, bus resolved, or no approach)');
+      return;
+    }
+    const replyRef = {
+      root: { uri: primary.uri, cid: primary.cid },
+      parent: { uri: primary.uri, cid: primary.cid },
+    };
+    const reply = await postWithVideo(
+      agent,
+      buildGapVideoPostText(video),
+      video.buffer,
+      buildGapVideoAltText(gap, pattern, video),
+      replyRef,
+    );
+    console.log(`Timelapse reply: ${reply.url}`);
+  } catch (e) {
+    console.warn(`Gap timelapse reply failed: ${e.message}`);
+  }
 }
 
 runBin(main);

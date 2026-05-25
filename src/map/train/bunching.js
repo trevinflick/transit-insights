@@ -14,12 +14,14 @@ const {
   markerLabelChip,
   buildCometTrail,
   buildClipProgress,
+  buildReadoutPill,
   TWEMOJI_HOUSE_INNER,
   TWEMOJI_FLAG_INNER,
   buildTerminalMarker,
   buildDirectionArrow,
   buildGhostLegend,
   xmlEscape,
+  measureTextWidth,
   requireMapboxToken,
   fetchMapboxStatic,
   separateMarkers,
@@ -147,7 +149,7 @@ function buildTrainOverlaySvg(
   bearingDeg = 0,
   arrowBearingDeg = null,
   unlabeledPinPixels = [],
-  { ghostLegendSvg = null, clock = null } = {},
+  { ghostLegendSvg = null, clock = null, readout = null, highlightStation = null } = {},
 ) {
   const fontSize = 18;
   const labelHeight = fontSize + 8;
@@ -318,7 +320,23 @@ function buildTrainOverlaySvg(
       rectY: chosen.y,
       approxWidth,
       anchor: chosen.anchor,
+      isHighlight: highlightStation != null && s.station.name === highlightStation,
     });
+  }
+
+  // Amber target ring on the wait stop (gap timelapses) — the spot the rider is
+  // waiting at, where the next train is heading. Amber ties it to the gap-strip
+  // color language; the concentric rings + center dot read as "destination."
+  const highlightMarkers = [];
+  if (highlightStation) {
+    const hs = stationsWithPixels.find((s) => s.station.name === highlightStation);
+    if (hs) {
+      highlightMarkers.push(
+        `<circle cx="${hs.x}" cy="${hs.y}" r="22" fill="none" stroke="#ffb020" stroke-width="3" opacity="0.45"/>`,
+        `<circle cx="${hs.x}" cy="${hs.y}" r="14" fill="none" stroke="#ffb020" stroke-width="4"/>`,
+        `<circle cx="${hs.x}" cy="${hs.y}" r="4" fill="#ffb020"/>`,
+      );
+    }
   }
 
   // White ring halo for trains sitting at a station.
@@ -373,7 +391,7 @@ function buildTrainOverlaySvg(
     arrows.push(buildDirectionArrow(widthPx - 220, 180, arrowDeg));
   }
 
-  const labelElements = labels.map(({ label, rectX, rectY, approxWidth, anchor }) => {
+  const labelElements = labels.map(({ label, rectX, rectY, approxWidth, anchor, isHighlight }) => {
     // Text x depends on text-anchor: start → left edge, middle → center,
     // end → right edge. Keeps the text visually centered within its rect.
     const textX =
@@ -383,6 +401,14 @@ function buildTrainOverlaySvg(
           ? rectX + approxWidth - 8
           : rectX + approxWidth / 2;
     const textY = rectY + fontSize + 2;
+    // Wait stop (gap timelapse): amber fill + dark bold text so the destination
+    // the train is approaching stands out from the white context labels. Same
+    // font size so the collision-avoidance placement stays valid.
+    if (isHighlight) {
+      return `
+    <rect x="${rectX}" y="${rectY}" width="${approxWidth}" height="${labelHeight}" fill="#ffb020" rx="3"/>
+    <text x="${textX}" y="${textY}" fill="#1c1c1c" text-anchor="${anchor}" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700">${label}</text>`;
+    }
     return `
     <rect x="${rectX}" y="${rectY}" width="${approxWidth}" height="${labelHeight}" fill="#000" fill-opacity="0.8" rx="3"/>
     <text x="${textX}" y="${textY}" fill="#fff" text-anchor="${anchor}" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="600">${label}</text>`;
@@ -420,8 +446,14 @@ function buildTrainOverlaySvg(
   const progressElements = clock
     ? [buildClipProgress({ ...clock, width: widthPx, height: heightPx })]
     : [];
+  // Gap timelapses pass a pre-built "next train ~N min to X" readout pill
+  // (measured + built async by the caller). Top-left, same corner as the ghost
+  // legend — gap clips follow one mid-line train and carry no ghost legend, so
+  // they never collide in practice.
+  const readoutElements = readout ? [readout] : [];
   const elements = [
     ...terminalElements,
+    ...highlightMarkers,
     ...labelElements,
     ...trailElements,
     ...halos,
@@ -429,6 +461,7 @@ function buildTrainOverlaySvg(
     ...chipElements,
     ...arrows,
     ...legendElements,
+    ...readoutElements,
     ...progressElements,
   ].join('\n');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}">${elements}</svg>`;
@@ -789,6 +822,14 @@ async function renderTrainBunchingFrame(view, baseMap, trains, opts = {}) {
   // Pre-render the ghost legend (async — measures text width via librsvg)
   // so the otherwise-sync overlay builder can splice it in directly.
   const ghostLegendSvg = opts.showGhostLegend ? await buildGhostLegend(20, 20) : null;
+  // Measure the readout text so its pill hugs the words (sync per-char width
+  // over-padded it). Bold measurement slightly over-reserves vs the 600 weight,
+  // which is the safe direction — text never spills the rounded backdrop.
+  let readoutSvg = null;
+  if (opts.readout) {
+    const tw = await measureTextWidth(opts.readout, 26, { bold: true });
+    readoutSvg = buildReadoutPill(opts.readout, { textWidth: tw });
+  }
   const svg = buildTrainOverlaySvg(
     stationsWithPixels,
     atStationPixels,
@@ -801,7 +842,12 @@ async function renderTrainBunchingFrame(view, baseMap, trains, opts = {}) {
     view.bearingDeg,
     view.arrowBearingDeg,
     unlabeledPinPixels,
-    { ghostLegendSvg, clock: opts.clock || null },
+    {
+      ghostLegendSvg,
+      clock: opts.clock || null,
+      readout: readoutSvg,
+      highlightStation: opts.highlightStation || null,
+    },
   );
   return sharp(baseMap)
     .resize(WIDTH, HEIGHT)

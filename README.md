@@ -243,6 +243,8 @@ Reply: ~10-minute timelapse video of the cluster, with intersection traffic sign
 
 ![Bus gap example](docs/images/bus-gap.jpg)
 
+Reply: ~10-minute timelapse following the next bus closing in on the wait stop, with a live ETA readout (deep gaps stay a still). See [GAPS.md](docs/GAPS.md#timelapse-reply).
+
 ### Bus speedmap
 > 🚦 Route 77 (Belmont) — Westbound
 > 10:00 PM–11:00 PM CT · average speed 12.9 mph

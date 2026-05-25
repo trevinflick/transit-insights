@@ -78,14 +78,33 @@ The signal we want is "the schedule said one thing, reality is much worse" — a
 
 The terminal-zone exclusion and the absolute-minute floor are the two filters that keep the false-positive rate low: gaps near terminals look big but mean nothing for riders mid-route, and one bus being 31 minutes apart on a 30-minute schedule isn't a story.
 
+## Timelapse reply
+
+After the still gap post goes out, the bot captures a ~10-minute timelapse and threads it as a reply — but framed around the rider's real question, *"is my train coming?"*, not the inter-vehicle span a bunching clip reports.
+
+The clip **follows only the trailing ("Next up") vehicle approaching the wait stop.** The leading vehicle is dropped entirely — it already left, and on bad gaps it sits near a terminal, which would force the bbox miles wide and shrink the markers to specks. By framing `[trailing vehicle path → wait stop]`, the camera holds still while the next vehicle advances across it, and the motion *is* the story.
+
+On-frame:
+
+- A live **HUD readout** top-left that ticks down — `Next train ~5 min to Wilson` → `~2 min`.
+- An **amber target ring + amber label** on the wait stop (same amber as the gap strip) so the eye lands on where the vehicle is heading.
+- The trailing vehicle's **N** chip + comet trail, the direction arrow, and the clip clock.
+
+The reply headline reports progress toward the platform: *"4 minutes later, the next train had closed to 0.87 mi from Wilson"* — or, on arrival, *"…the next train reached Wilson. 🎬 the wait is over"*.
+
+**Deep gaps fall back to the still map** (no reply). Two guards enforce this: skip before capturing if the trailing vehicle starts too far from the stop to close in 10 minutes (>4 mi train / >2 mi bus — the readable-frame ceiling), and skip after capturing if it never meaningfully closed (<0.25 mi train / <0.125 mi bus) and didn't arrive. The worst gaps stay newsworthy as a still.
+
 ## Files
 
 - `src/bus/gaps.js` — bus gap detection.
-- `src/bus/gapPost.js` — post rendering and image building.
+- `src/bus/gapPost.js` — bus post + timelapse reply text.
+- `src/bus/gapVideo.js` — bus gap timelapse capture + clip assembly.
 - `src/train/gaps.js` — train gap detection with along-track snapping and station labeling.
-- `src/train/gapPost.js` — train post rendering.
+- `src/train/gapPost.js` — train post + timelapse reply text.
+- `src/train/gapVideo.js` — train gap timelapse capture + clip assembly.
+- `src/map/bus/gaps.js`, `src/map/train/gaps.js` — still gap maps + timelapse framing views.
 - `src/shared/geo.js` — terminal zone helpers (`terminalZoneFt`).
-- `bin/bus/gaps.js`, `bin/train/gaps.js` — cron entry points.
+- `bin/bus/gaps.js`, `bin/train/gaps.js` — cron entry points (`--video` dry-run flag renders the clip locally).
 
 ## Train gap cap
 

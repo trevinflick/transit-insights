@@ -1,5 +1,7 @@
 const { encode } = require('../../shared/polyline');
 const { buildLinePolyline, pointAlongLine, snapToLine } = require('../../train/speedmap');
+const { project } = require('../../shared/projection');
+const { WIDTH, HEIGHT } = require('../common');
 const {
   computeTrainBunchingView,
   fetchTrainBunchingBaseMap,
@@ -92,6 +94,49 @@ function computeTrainGapView(gap, lineColors, trainLines, stations) {
   return view;
 }
 
+/**
+ * Framing for a gap *timelapse* — different from the still gap view. The clip
+ * follows only the trailing ("Next up") train approaching the wait stop; the
+ * leading train is dropped entirely (it already left, and on bad gaps it sits
+ * near a terminal, which would force the bbox miles wide). The frame fits the
+ * trailing train's whole captured path plus the wait stop, so the camera holds
+ * still while the train advances across it. `trailingPath` is every captured
+ * position of the trailing train (widens the bbox so later frames stay in view).
+ */
+function computeTrainGapVideoView(gap, trailingPath, lineColors, trainLines, stations) {
+  const bunch = { line: gap.line, trDr: gap.trDr, trains: [gap.trailing] };
+  const stop = gap.nearStation;
+  // extraTrains only widen the bbox (they aren't rendered) — feed the trailing
+  // train's path and a pseudo-point at the wait stop so both stay framed.
+  const extra = [...trailingPath];
+  if (stop?.lat != null && stop?.lon != null) extra.push({ lat: stop.lat, lon: stop.lon });
+  const view = computeTrainBunchingView(bunch, lineColors, trainLines, stations, extra, {
+    fitBbox: true,
+  });
+
+  // Guarantee the wait stop is pinned + labeled (it's the clip's anchor). The
+  // bunching framing labels stations flanking the trailing train, which may not
+  // reach the stop ahead of it.
+  if (stop?.lat != null && stop?.lon != null) {
+    const already = view.visibleStations.some((v) => v.station.name === stop.name);
+    if (!already) {
+      view.overlays.push(`pin-s+ffffff(${stop.lon.toFixed(5)},${stop.lat.toFixed(5)})`);
+      const px = project(
+        stop.lat,
+        stop.lon,
+        view.centerLat,
+        view.centerLon,
+        view.zoom,
+        WIDTH,
+        HEIGHT,
+      );
+      view.visibleStations.push({ station: stop, x: px.x, y: px.y, bearingDeg: view.bearingDeg });
+      view.pinStations.push({ station: stop, x: px.x, y: px.y });
+    }
+  }
+  return view;
+}
+
 async function renderTrainGap(gap, lineColors, trainLines, stations) {
   const view = computeTrainGapView(gap, lineColors, trainLines, stations);
   const baseMap = await fetchTrainBunchingBaseMap(view);
@@ -103,4 +148,4 @@ async function renderTrainGap(gap, lineColors, trainLines, stations) {
   return renderTrainBunchingFrame(view, baseMap, [gap.leading, gap.trailing], { labels });
 }
 
-module.exports = { renderTrainGap, computeTrainGapView };
+module.exports = { renderTrainGap, computeTrainGapView, computeTrainGapVideoView };

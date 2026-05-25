@@ -1,6 +1,6 @@
 const { names: routeNames } = require('./routes');
 const { formatCallouts } = require('../shared/history');
-const { formatMinutes } = require('../shared/format');
+const { formatMinutes, formatDistance, elapsedMinutesLabel } = require('../shared/format');
 
 function routeTitle(route) {
   const name = routeNames[route];
@@ -27,4 +27,20 @@ function buildAltText(gap, pattern, stop) {
   return `Map of ${routeTitle(gap.route)} ${pattern.direction.toLowerCase()} showing a ${formatMinutes(gap.gapMin)} gap between buses near ${stop.stopName}.`;
 }
 
-module.exports = { buildPostText, buildAltText };
+// Timelapse reply text — the next bus closing in on the wait stop, the rider's
+// real question, not the inter-bus span a bunching clip reports.
+function buildGapVideoPostText(result) {
+  const stop = result.stopName || 'the stop';
+  const elapsed = elapsedMinutesLabel(result.elapsedSec);
+  if (result.reached) {
+    return `${elapsed} later, the next bus reached ${stop}.\n🎬 the wait is over`;
+  }
+  return `${elapsed} later, the next bus had closed to ${formatDistance(result.endDistFt)} from ${stop}.\n🎬 ${formatDistance(result.startDistFt)} → ${formatDistance(result.endDistFt)}`;
+}
+
+function buildGapVideoAltText(gap, pattern, result) {
+  const stop = result.stopName || 'the stop';
+  return `Timelapse map of ${routeTitle(gap.route)} ${pattern.direction.toLowerCase()} showing the next bus approaching ${stop} over ${formatMinutes(result.elapsedSec / 60)}.`;
+}
+
+module.exports = { buildPostText, buildAltText, buildGapVideoPostText, buildGapVideoAltText };

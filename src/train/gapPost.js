@@ -1,6 +1,6 @@
 const { LINE_NAMES, shortStationName } = require('./api');
 const { formatCallouts } = require('../shared/history');
-const { formatMinutes } = require('../shared/format');
+const { formatMinutes, formatDistance, elapsedMinutesLabel } = require('../shared/format');
 
 function buildPostText(gap, callouts = []) {
   const lineName = LINE_NAMES[gap.line];
@@ -32,4 +32,23 @@ function buildAltText(gap) {
   return `Map of the ${lineName} Line toward ${dest} showing a ${formatMinutes(gap.gapMin)} gap between trains${whereClause}.`;
 }
 
-module.exports = { buildPostText, buildAltText };
+// Timelapse reply text. The clip follows the next train approaching the wait
+// stop, so the headline is its progress toward the platform — the rider's real
+// question — not the inter-train span a bunching clip reports.
+function buildGapVideoPostText(result) {
+  const stop = shortStationName(result.stopName) || 'the stop';
+  const elapsed = elapsedMinutesLabel(result.elapsedSec);
+  if (result.reached) {
+    return `${elapsed} later, the next train reached ${stop}.\n🎬 the wait is over`;
+  }
+  return `${elapsed} later, the next train had closed to ${formatDistance(result.endDistFt)} from ${stop}.\n🎬 ${formatDistance(result.startDistFt)} → ${formatDistance(result.endDistFt)}`;
+}
+
+function buildGapVideoAltText(gap, result) {
+  const lineName = LINE_NAMES[gap.line];
+  const dest = gap.leading.destination;
+  const stop = shortStationName(result.stopName) || 'the stop';
+  return `Timelapse map of the ${lineName} Line toward ${dest} showing the next train approaching ${stop} over ${formatMinutes(result.elapsedSec / 60)}.`;
+}
+
+module.exports = { buildPostText, buildAltText, buildGapVideoPostText, buildGapVideoAltText };

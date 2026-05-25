@@ -6,7 +6,8 @@ const argv = require('minimist')(process.argv.slice(2));
 const { getAllTrainPositions, LINE_COLORS, LINE_NAMES } = require('../../src/train/api');
 const { detectAllTrainGaps } = require('../../src/train/gaps');
 const { renderTrainGap } = require('../../src/map');
-const { loginTrain, postWithImage, postText } = require('../../src/train/bluesky');
+const { captureTrainGapVideo } = require('../../src/train/gapVideo');
+const { loginTrain, postWithImage, postText, postWithVideo } = require('../../src/train/bluesky');
 const { isOnCooldown } = require('../../src/shared/state');
 const { commitAndPost } = require('../../src/shared/postDetection');
 const { expectedTrainHeadwayMin } = require('../../src/shared/gtfs');
@@ -18,7 +19,12 @@ const {
   recordMetaSignal,
 } = require('../../src/shared/history');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
-const { buildPostText, buildAltText } = require('../../src/train/gapPost');
+const {
+  buildPostText,
+  buildAltText,
+  buildGapVideoPostText,
+  buildGapVideoAltText,
+} = require('../../src/train/gapPost');
 const trainLines = require('../../src/train/data/trainLines.json');
 const trainStations = require('../../src/train/data/trainStations.json');
 
@@ -201,6 +207,26 @@ async function main() {
       `train-gap-${LINE_NAMES[gap.line].toLowerCase()}-${Date.now()}.jpg`,
     );
     console.log(`\n--- DRY RUN ---\n${text}\n\nAlt: ${alt}\nImage: ${outPath}`);
+    if (argv.video) {
+      const ticks = argv.ticks ? Number(argv.ticks) : undefined;
+      const tickMs = argv['tick-ms'] ? Number(argv['tick-ms']) : undefined;
+      const interpolate = argv.interpolate ? Number(argv.interpolate) : undefined;
+      console.log(`\nCapturing gap timelapse (ticks=${ticks || 'default'})...`);
+      const video = await captureTrainGapVideo(gap, LINE_COLORS, trainLines, trainStations, {
+        ticks,
+        tickMs,
+        interpolate,
+      });
+      if (!video) {
+        console.log('Gap timelapse skipped (gap too deep, train resolved, or no approach)');
+      } else {
+        const videoPath = writeDryRunAsset(
+          video.buffer,
+          `train-gap-${LINE_NAMES[gap.line].toLowerCase()}-${Date.now()}.mp4`,
+        );
+        console.log(`Video: ${videoPath}\n${buildGapVideoPostText(video)}`);
+      }
+    }
     return;
   }
 
@@ -216,7 +242,7 @@ async function main() {
     ratio: gap.ratio,
     nearStop: gap.nearStation?.name || gap.leading.nextStation,
   };
-  await commitAndPost({
+  const result = await commitAndPost({
     cooldownKeys: [dirKey, lineKey],
     forceClearCooldown: cooldownOverridden,
     recordSkip: () => history.recordGap({ ...baseEvent, posted: false }),
@@ -246,6 +272,35 @@ async function main() {
     postWithImage,
     postText,
   });
+  if (!result) return;
+  const { agent, primary } = result;
+
+  // Timelapse reply: follow the next train approaching the wait stop. Non-fatal
+  // — the primary gap post already went out. Returns null (no reply) when the
+  // gap is too deep to frame usefully or the train doesn't close in — those
+  // stay a still map, by design.
+  try {
+    console.log('Capturing train gap timelapse...');
+    const video = await captureTrainGapVideo(gap, LINE_COLORS, trainLines, trainStations);
+    if (!video) {
+      console.log('Gap timelapse skipped (gap too deep, train resolved, or no approach)');
+      return;
+    }
+    const replyRef = {
+      root: { uri: primary.uri, cid: primary.cid },
+      parent: { uri: primary.uri, cid: primary.cid },
+    };
+    const reply = await postWithVideo(
+      agent,
+      buildGapVideoPostText(video),
+      video.buffer,
+      buildGapVideoAltText(gap, video),
+      replyRef,
+    );
+    console.log(`Timelapse reply: ${reply.url}`);
+  } catch (e) {
+    console.warn(`Gap timelapse reply failed: ${e.message}`);
+  }
 }
 
 runBin(main);

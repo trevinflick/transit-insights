@@ -17,11 +17,14 @@ const {
   markerLabelChip,
   buildCometTrail,
   buildClipProgress,
+  buildReadoutPill,
   buildGhostLegend,
   buildTerminalMarker,
   buildStopMarker,
   buildStopDot,
   buildDirectionArrow,
+  measureTextWidth,
+  xmlEscape,
   requireMapboxToken,
   fetchMapboxStatic,
   separateMarkers,
@@ -315,7 +318,51 @@ async function renderBunchingFrame(view, baseMap, vehicles, signals = [], stops 
     ? [buildClipProgress({ ...opts.clock, width: WIDTH, height: HEIGHT })]
     : [];
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">${signalElements.join('\n')}${stopElements.join('\n')}${terminalElements.join('\n')}${vehicleLayer.join('\n')}${chipLayer.join('\n')}${arrowElements.join('\n')}${legendElements.join('\n')}${progressElements.join('\n')}</svg>`;
+  // Wait-stop highlight (gap timelapse): amber target ring + amber name label
+  // marking where the next bus is headed. Amber ties it to the gap-strip color
+  // language and pops against the route + bus markers.
+  const highlightElements = [];
+  if (opts.highlightStop?.lat != null) {
+    const { x, y } = project(
+      opts.highlightStop.lat,
+      opts.highlightStop.lon,
+      view.centerLat,
+      view.centerLon,
+      view.zoom,
+      WIDTH,
+      HEIGHT,
+    );
+    if (x >= 0 && x <= WIDTH && y >= 0 && y <= HEIGHT) {
+      highlightElements.push(
+        `<circle cx="${x}" cy="${y}" r="22" fill="none" stroke="#ffb020" stroke-width="3" opacity="0.45"/>`,
+        `<circle cx="${x}" cy="${y}" r="14" fill="none" stroke="#ffb020" stroke-width="4"/>`,
+        `<circle cx="${x}" cy="${y}" r="4" fill="#ffb020"/>`,
+      );
+      const name = opts.highlightStop.name || '';
+      if (name) {
+        const fontSize = 18;
+        const labelH = 28;
+        const tw = await measureTextWidth(name, fontSize, { bold: true });
+        const boxW = tw + 16;
+        const perp = perpendicularFromBearing(view.bearingDeg);
+        const lx = Math.max(4, Math.min(WIDTH - boxW - 4, x + perp.x * 26 - boxW / 2));
+        const ly = Math.max(4, Math.min(HEIGHT - labelH - 4, y + perp.y * 26 - labelH / 2));
+        highlightElements.push(
+          `<rect x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" width="${boxW.toFixed(1)}" height="${labelH}" fill="#ffb020" rx="3"/>`,
+          `<text x="${(lx + boxW / 2).toFixed(1)}" y="${(ly + fontSize + 5).toFixed(1)}" fill="#1c1c1c" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700">${xmlEscape(name)}</text>`,
+        );
+      }
+    }
+  }
+
+  // Live "next bus ~N min to X" HUD pill (gap timelapse), top-left.
+  let readoutElements = [];
+  if (opts.readout) {
+    const tw = await measureTextWidth(opts.readout, 26, { bold: true });
+    readoutElements = [buildReadoutPill(opts.readout, { textWidth: tw })];
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">${signalElements.join('\n')}${stopElements.join('\n')}${highlightElements.join('\n')}${terminalElements.join('\n')}${vehicleLayer.join('\n')}${chipLayer.join('\n')}${arrowElements.join('\n')}${legendElements.join('\n')}${readoutElements.join('\n')}${progressElements.join('\n')}</svg>`;
   return sharp(baseMap)
     .resize(WIDTH, HEIGHT)
     .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
