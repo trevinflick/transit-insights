@@ -130,6 +130,34 @@ test('active incident reports no resolution even if a paired obs resolved', () =
   assert.equal(incidents[0].resolved_ts, null);
 });
 
+test('merged incident first_seen_ts is the earliest of CTA and bot onset', () => {
+  // Mirrors event 3mmsa2hmli42h: the bot post landed AFTER CTA, but its
+  // back-dated onset_ts (last train through the cold stretch) was 30 min
+  // before CTA fired.
+  const earlyObs = obs({
+    id: 1,
+    ts: NOW + 5 * 60_000,
+    onset_ts: NOW - 30 * 60_000,
+  });
+  const incidents = buildIncidents([alert({ first_seen_ts: NOW })], [earlyObs]);
+  assert.equal(incidents.length, 1);
+  const inc = incidents[0];
+  assert.equal(inc.first_seen_ts, NOW - 30 * 60_000, 'uses earliest onset across sources');
+  assert.equal(inc.cta.first_seen_ts, NOW, 'CTA block keeps its own post time');
+});
+
+test('merged first_seen_ts falls back to obs.ts when onset_ts is null', () => {
+  const o = obs({ id: 1, ts: NOW - 10 * 60_000, onset_ts: null });
+  const incidents = buildIncidents([alert({ first_seen_ts: NOW })], [o]);
+  assert.equal(incidents[0].first_seen_ts, NOW - 10 * 60_000);
+});
+
+test('merged first_seen_ts stays on CTA when CTA fired first', () => {
+  const o = obs({ id: 1, ts: NOW + 5 * 60_000, onset_ts: NOW + 3 * 60_000 });
+  const incidents = buildIncidents([alert({ first_seen_ts: NOW })], [o]);
+  assert.equal(incidents[0].first_seen_ts, NOW);
+});
+
 test('resolved incident takes alert resolved_ts; incidents sort newest-first', () => {
   const older = alert({
     alert_id: 'a-old',

@@ -124,11 +124,21 @@ function buildIncidents(builtAlerts, builtObservations) {
       (a, b) => Math.abs(a.ts - alert.first_seen_ts) - Math.abs(b.ts - alert.first_seen_ts),
     );
     const active = alert.active || matches.some((o) => o.active);
+    // Earliest detection across sources — the bot's pulse-cold/thin-gap onset
+    // can predate CTA's post by tens of minutes, and the incident-level
+    // "first seen" should reflect that lead. CTA's own first_seen_ts is still
+    // preserved inside the `cta` block so consumers that want CTA's post time
+    // (e.g. lead-time analytics) can still get it.
+    const earliestObs = matches.reduce(
+      (min, o) => Math.min(min, o.onset_ts ?? o.ts),
+      Number.POSITIVE_INFINITY,
+    );
+    const incidentFirstSeen = Math.min(alert.first_seen_ts, earliestObs);
     incidents.push({
       id: postUrlRkey(alert.post_url) ?? postUrlRkey(matches[0]?.post_url) ?? alert.alert_id,
       kind: alert.kind,
       routes: alert.routes,
-      first_seen_ts: alert.first_seen_ts,
+      first_seen_ts: incidentFirstSeen,
       // While active, don't report a resolution — a paired obs may carry its own
       // earlier resolved_ts, which would read as "ended before it started."
       resolved_ts: active ? null : (alert.resolved_ts ?? matches[0]?.resolved_ts ?? null),
