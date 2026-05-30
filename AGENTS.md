@@ -32,6 +32,7 @@ comments), `docs/{ALERTS,BUNCHING,GAPS,GHOSTING,SPEEDMAP}.md`.
 - Husky pre-commit runs `biome check --write` on staged `*.{js,json}`. On
   failure, fix the cause and create a new commit (don't amend).
 - Update docs alongside code so they don't go stale.
+- When you make a change to bus logic, you should consider making the equivalent change to the train logic (or vice versa). Even though the train and bus logic is seperate, the implementation should be kept in parallel as much as possible.
 
 ## Invariants that break things if violated
 
