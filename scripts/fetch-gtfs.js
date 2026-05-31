@@ -312,52 +312,13 @@ async function main() {
     if (!prev || c > prev.count) dominantService.set(rdth, { serviceId, count: c });
   }
 
-  // Rail short-turns (UIC-Halsted, Jefferson Park) share direction_id with
-  // full runs — staggering their starts collapses apparent headway. Lock on
-  // dominant origin per (route, dir) to measure terminal→terminal only.
-  const railOriginCounts = new Map(); // route|dir → Map(stopId → count)
-  for (const [tripId, meta] of tripMeta) {
-    if (meta.mode !== 'rail') continue;
-    const origin = firstStopId.get(tripId);
-    if (!origin) continue;
-    const k = `${meta.route}|${meta.dir}`;
-    if (!railOriginCounts.has(k)) railOriginCounts.set(k, new Map());
-    const m = railOriginCounts.get(k);
-    m.set(origin, (m.get(origin) || 0) + 1);
-  }
-  const railDominantOrigin = new Map(); // route|dir → stop_id
-  for (const [k, counts] of railOriginCounts) {
-    let best = null;
-    let bestCount = -1;
-    for (const [stopId, c] of counts) {
-      if (c > bestCount) {
-        bestCount = c;
-        best = stopId;
-      }
-    }
-    if (best) railDominantOrigin.set(k, best);
-  }
-
-  // Same logic for buses: garage pullouts staggered with revenue trips
-  // collapse the headway median below rider-facing frequency.
-  const busDominantOrigin = computeBusDominantOrigin(tripMeta, firstStopId, { log: true });
-
-  const buckets = new Map();
-  // Parallel to `buckets`, kept for display ("every ~X min").
-  const durationBuckets = new Map();
-  // Ground-truth: count of trips whose [dep, arr] overlaps each hour.
-  // Replaces the old `duration / headway` approximation that broke during ramp-up.
-  const activeBuckets = new Map();
-  function bucketKey(route, dir, dayType, hour) {
-    return `${route}|${dir}|${dayType}|${hour}`;
-  }
-  const lastStopSample = new Map();
-
-  // Active counts include every revenue trip in scope — short-turn variants
-  // and non-dominant service overlays still put buses on the street, so the
-  // ground-truth "how many should be active right now" must count them.
-  // Headway and duration buckets stay filtered below (rider-facing frequency
-  // shouldn't include garage pullouts and short-turns).
+  // Ground-truth active-trip count: trips whose [dep, arr] overlaps each hour.
+  // Keyed per direction (NOT per pattern) and counts EVERY revenue trip —
+  // short-turns and overlay service still put vehicles on the street, so
+  // "how many should be active right now" must include them. Replaces the old
+  // `duration / headway` approximation that broke during ramp-up.
+  const activeBuckets = new Map(); // route|dir|dayType|hour → fractional count
+  const activeKey = (route, dir, dayType, hour) => `${route}|${dir}|${dayType}|${hour}`;
   for (const [tripId, meta] of tripMeta) {
     const dep = firstDeparture.get(tripId);
     const arr = lastArrival.get(tripId);
@@ -369,51 +330,43 @@ async function main() {
       const hEnd = hStart + 3600;
       const overlap = Math.min(arr, hEnd) - Math.max(dep, hStart);
       if (overlap <= 0) continue;
-      const k = bucketKey(meta.route, meta.dir, meta.dayType, h % 24);
+      const k = activeKey(meta.route, meta.dir, meta.dayType, h % 24);
       activeBuckets.set(k, (activeBuckets.get(k) || 0) + overlap / 3600);
     }
   }
 
+  // Headway/duration are measured PER PATTERN — grouped by (origin terminal →
+  // destination terminal) — not per direction. Mixing patterns in one bucket
+  // corrupts the median: owl short-turns made the 66 read ~6 min when the
+  // through service is 30, and a route with two start terminals (87) collapsed
+  // to <1 min by comparing departures from different terminals. With origin and
+  // dest in the key each group is a single pattern, so first-departure gaps are
+  // meaningful again. Cross-date-range family dupes are still removed via
+  // dominantService; garage pull-outs/deadheads form their own tiny groups and
+  // fall out below for lack of any 2+ -departure hour.
+  const headwayBuckets = new Map(); // route|dir|origin|dest|dayType|hour → [dep,...]
+  const durationBuckets = new Map(); // same key → [durMin,...]
+  const patternTripCount = new Map(); // route|dir|origin|dest → total trips
+  const patternHeadsign = new Map(); // route|dir|origin|dest → headsign
   for (const [tripId, meta] of tripMeta) {
     const dep = firstDeparture.get(tripId);
     if (dep == null) continue;
     const hour = Math.floor(dep / 3600) % 24;
-    const rdth = `${meta.route}|${meta.dir}|${meta.dayType}|${hour}`;
-    const dominant = dominantService.get(rdth);
+    const dominant = dominantService.get(`${meta.route}|${meta.dir}|${meta.dayType}|${hour}`);
     if (!dominant || dominant.serviceId !== meta.serviceId) continue;
-    if (meta.mode === 'rail') {
-      const domOrigin = railDominantOrigin.get(`${meta.route}|${meta.dir}`);
-      if (domOrigin && firstStopId.get(tripId) !== domOrigin) continue;
-    } else if (meta.mode === 'bus') {
-      const domOrigin = busDominantOrigin.get(`${meta.route}|${meta.dir}`);
-      if (domOrigin && firstStopId.get(tripId) !== domOrigin) continue;
-    }
-    const key = bucketKey(meta.route, meta.dir, meta.dayType, hour);
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key).push(dep);
-
+    const origin = firstStopId.get(tripId);
+    const dest = lastStopId.get(tripId);
+    if (!origin || !dest) continue;
+    const pk = `${meta.route}|${meta.dir}|${origin}|${dest}`;
+    patternTripCount.set(pk, (patternTripCount.get(pk) || 0) + 1);
+    if (!patternHeadsign.has(pk)) patternHeadsign.set(pk, meta.headsign || '');
+    const key = `${pk}|${meta.dayType}|${hour}`;
+    if (!headwayBuckets.has(key)) headwayBuckets.set(key, []);
+    headwayBuckets.get(key).push(dep);
     const arr = lastArrival.get(tripId);
     if (arr != null && arr > dep) {
-      const durMin = (arr - dep) / 60;
       if (!durationBuckets.has(key)) durationBuckets.set(key, []);
-      durationBuckets.get(key).push(durMin);
-    }
-
-    const rdKey = `${meta.route}|${meta.dir}`;
-    if (!lastStopSample.has(rdKey)) {
-      const endStopId = lastStopId.get(tripId);
-      const originStopId = firstStopId.get(tripId);
-      const endStop = endStopId && byStopId.get(endStopId);
-      const originStop = originStopId && byStopId.get(originStopId);
-      if (endStop) {
-        lastStopSample.set(rdKey, {
-          lat: parseFloat(endStop.stop_lat),
-          lon: parseFloat(endStop.stop_lon),
-          originLat: originStop ? parseFloat(originStop.stop_lat) : null,
-          originLon: originStop ? parseFloat(originStop.stop_lon) : null,
-          headsign: meta.headsign,
-        });
-      }
+      durationBuckets.get(key).push((arr - dep) / 60);
     }
   }
 
@@ -421,42 +374,75 @@ async function main() {
   const routeMode = new Map();
   for (const meta of tripMeta.values()) routeMode.set(meta.route, meta.mode);
 
-  // For each bucket, compute median of consecutive departure gaps (minutes).
-  const out = { generatedAt: Date.now(), routes: {}, lines: {} };
-  for (const [key, times] of buckets) {
-    if (times.length < 2) continue;
-    const [route, dir, dayType, hourStr] = key.split('|');
+  // Fold per-(pattern, dayType, hour) buckets into per-pattern headway/duration
+  // maps, taking the median of consecutive departure gaps within each pattern.
+  const patternData = new Map(); // route|dir → Map(origin|dest → { origin, dest, headways, durations })
+  for (const [key, times] of headwayBuckets) {
+    if (times.length < 2) continue; // need 2 departures to measure a gap
+    const [route, dir, origin, dest, dayType, hourStr] = key.split('|');
     const hour = parseInt(hourStr, 10);
     const sorted = [...times].sort((a, b) => a - b);
     const gaps = [];
     for (let i = 1; i < sorted.length; i++) gaps.push((sorted[i] - sorted[i - 1]) / 60);
     const medMin = median(gaps);
     if (medMin == null) continue;
-    const bucket = routeMode.get(route) === 'rail' ? out.lines : out.routes;
-    if (!bucket[route]) bucket[route] = {};
-    if (!bucket[route][dir]) {
-      const sample = lastStopSample.get(`${route}|${dir}`) || {};
-      bucket[route][dir] = {
-        headsign: sample.headsign || '',
-        terminalLat: sample.lat ?? null,
-        terminalLon: sample.lon ?? null,
-        originLat: sample.originLat ?? null,
-        originLon: sample.originLon ?? null,
-        headways: {},
-      };
-    }
-    if (!bucket[route][dir].headways[dayType]) bucket[route][dir].headways[dayType] = {};
-    bucket[route][dir].headways[dayType][hour] = Math.round(medMin * 10) / 10;
-
+    const rd = `${route}|${dir}`;
+    if (!patternData.has(rd)) patternData.set(rd, new Map());
+    const pm = patternData.get(rd);
+    const pk = `${origin}|${dest}`;
+    if (!pm.has(pk)) pm.set(pk, { origin, dest, headways: {}, durations: {} });
+    const pat = pm.get(pk);
+    if (!pat.headways[dayType]) pat.headways[dayType] = {};
+    pat.headways[dayType][hour] = Math.round(medMin * 10) / 10;
     const durations = durationBuckets.get(key);
     if (durations && durations.length > 0) {
       const medDur = median(durations);
       if (medDur != null) {
-        if (!bucket[route][dir].durations) bucket[route][dir].durations = {};
-        if (!bucket[route][dir].durations[dayType]) bucket[route][dir].durations[dayType] = {};
-        bucket[route][dir].durations[dayType][hour] = Math.round(medDur * 10) / 10;
+        if (!pat.durations[dayType]) pat.durations[dayType] = {};
+        pat.durations[dayType][hour] = Math.round(medDur * 10) / 10;
       }
     }
+  }
+
+  // Emit. Each direction carries its full pattern list (consumers match a live
+  // pattern's endpoints to the right group) plus the dominant pattern's
+  // headway/duration/terminals hoisted to the direction level — a fallback for
+  // patternless consumers and for live patterns that match no group.
+  const out = { generatedAt: Date.now(), routes: {}, lines: {} };
+  for (const [rd, pm] of patternData) {
+    const [route, dir] = rd.split('|');
+    const list = [];
+    for (const pat of pm.values()) {
+      if (Object.keys(pat.headways).length === 0) continue;
+      const pk = `${route}|${dir}|${pat.origin}|${pat.dest}`;
+      const o = byStopId.get(pat.origin);
+      const d = byStopId.get(pat.dest);
+      list.push({
+        headsign: patternHeadsign.get(pk) || '',
+        tripCount: patternTripCount.get(pk) || 0,
+        originLat: o ? parseFloat(o.stop_lat) : null,
+        originLon: o ? parseFloat(o.stop_lon) : null,
+        terminalLat: d ? parseFloat(d.stop_lat) : null,
+        terminalLon: d ? parseFloat(d.stop_lon) : null,
+        headways: pat.headways,
+        durations: pat.durations,
+      });
+    }
+    if (list.length === 0) continue;
+    list.sort((a, b) => b.tripCount - a.tripCount); // dominant pattern first
+    const dom = list[0];
+    const bucket = routeMode.get(route) === 'rail' ? out.lines : out.routes;
+    if (!bucket[route]) bucket[route] = {};
+    bucket[route][dir] = {
+      headsign: dom.headsign,
+      terminalLat: dom.terminalLat,
+      terminalLon: dom.terminalLon,
+      originLat: dom.originLat,
+      originLon: dom.originLon,
+      headways: dom.headways,
+      durations: dom.durations,
+      patterns: list,
+    };
   }
 
   // Active-trip counts emit separately — hours with zero starts can still

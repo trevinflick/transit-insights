@@ -48,6 +48,8 @@ ratio  = gapMin / expectedHeadwayMin
 
 The number is intentionally crude. It's only used as a *ratio* against the scheduled headway, not as a literal ETA. A 2.5× ratio is the threshold: a gap that's two and a half times the schedule is worth posting.
 
+`expectedHeadwayMin` is **per pattern**, not per direction. The GTFS index stores a headway for each origin→dest terminal pair, and the live vehicle's pattern is matched to the right group by its endpoint coordinates (`matchPattern` in `src/shared/gtfs.js`). This matters because a direction often runs several patterns at once — a through route plus owl short-turns or branches — and lumping them together corrupts the scheduled headway: the 66's overnight eastbound through service is every ~30 min, but mixing in the Austin→Pulaski owl short-turns made the old per-direction median read ~6 min, firing false gaps on a normal overnight wait. When a live pattern matches no indexed group, the lookup falls back to the direction's dominant pattern.
+
 ### Buses — `src/bus/gaps.js`
 
 For each pattern (`pid`), we already have `pdist` directly from the API, so:

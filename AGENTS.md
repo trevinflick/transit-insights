@@ -53,9 +53,18 @@ Brief list; deeper rationale in the linked deep-dives.
 - **GTFS index throws past 7 days old**. After laptop sleep / cron outage,
   run `npm run fetch-gtfs` before manual runs.
 - **Don't merge the active vs. headway/duration loops in `fetch-gtfs.js`**.
-  `activeByHour` counts every revenue trip; `headways`/`durations` filter by
-  dominant service_id + dominant origin. Merging suppresses bus ghost
-  detection on multi-terminal routes — see `docs/GHOSTING.md`.
+  `activeByHour` is keyed per direction and counts every revenue trip;
+  `headways`/`durations` are keyed **per pattern** (origin→dest, after the
+  dominant service_id filter). Merging suppresses bus ghost detection on
+  multi-terminal routes — see `docs/GHOSTING.md`.
+- **Headways are per-pattern, not per-direction.** Each `routes[r][dir]` carries
+  a `patterns[]` list (one entry per origin→dest terminal pair, with endpoint
+  coords + `tripCount`); `headways`/`durations`/`terminalLat`… at the direction
+  level are the *dominant* pattern's, kept as a fallback. Consumers resolve a
+  live pid to a group via `matchPattern` in `src/shared/gtfs.js` (endpoint
+  match). This is why mixing short-turns/branches into one bucket is wrong — it
+  read the 66 at ~6 min vs a true 30 overnight. Don't revert to a per-direction
+  median.
 - **Pids are stringified everywhere** (`parseVehicle`) so cache and
   fresh-API rows compare strict-equal.
 - **`recordAlertSeen` is called twice per new alert** (pre-post `postUri:null`,

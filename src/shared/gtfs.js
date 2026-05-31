@@ -169,23 +169,70 @@ function interpolatedHourlyLookup(byDayType, now) {
   return cur * (1 - alpha) + neighbor * alpha;
 }
 
-function busLookupInterpolated(route, pattern, field, now) {
-  const index = loadIndex();
-  const byDir = index.routes[route];
-  if (!byDir) return null;
-  const dir = resolveDirection({ ...pattern, route });
+// Combined origin+dest endpoint distance beyond which a live pattern is judged
+// to match NO indexed pattern group, so we fall back to the direction-level
+// (dominant pattern) headway rather than snap to a wrong group.
+const PATTERN_MATCH_TOLERANCE_FT = 3960; // 0.75 mi
+
+// Match a live pattern to the indexed pattern group (origin→dest) whose
+// endpoints are closest. Headway/duration are measured within a single pattern,
+// so a group isn't corrupted by short-turns/branches that share the direction
+// (the old per-direction median read the 66 at ~6 min vs a true 30). Falls back
+// to the direction-level dominant pattern when the route has no pattern list
+// (older index) or nothing matches within tolerance.
+// Pure: pick the pattern group whose (origin → dest) endpoints best match the
+// given first/last points, or null when none is within `tolerance`. Scores
+// dest-distance plus origin-distance so a short-turn that shares the origin but
+// ends mid-route doesn't snap to the through pattern. Exported for testing.
+function matchPattern(patterns, first, last, tolerance = PATTERN_MATCH_TOLERANCE_FT) {
+  let best = null;
+  let bestScore = Infinity;
+  for (const p of patterns || []) {
+    if (p.terminalLat == null || !last) continue;
+    const destD = haversineFt(
+      { lat: p.terminalLat, lon: p.terminalLon },
+      { lat: last.lat, lon: last.lon },
+    );
+    const origD =
+      p.originLat != null && first
+        ? haversineFt({ lat: p.originLat, lon: p.originLon }, { lat: first.lat, lon: first.lon })
+        : 0;
+    const score = destD + origD;
+    if (score < bestScore) {
+      bestScore = score;
+      best = p;
+    }
+  }
+  return best && bestScore <= tolerance ? best : null;
+}
+
+const _patternGroupCache = new Map(); // pid → resolved group
+function resolvePatternGroup(pattern) {
+  const cached = _patternGroupCache.get(pattern.pid);
+  if (cached) return cached;
+  const dir = resolveDirection(pattern);
   if (!dir) return null;
-  const dirInfo = byDir[dir];
-  if (!dirInfo?.[field]) return null;
-  return interpolatedHourlyLookup(dirInfo[field], now);
+  const dirInfo = loadIndex().routes[pattern.route]?.[dir];
+  if (!dirInfo) return null;
+  if (!dirInfo.patterns?.length) return dirInfo; // older index — direction-level only
+  const first = pattern.points[0];
+  const last = pattern.points[pattern.points.length - 1];
+  // Fall back to the direction-level dominant pattern when nothing matches.
+  const resolved = matchPattern(dirInfo.patterns, first, last) || dirInfo;
+  _patternGroupCache.set(pattern.pid, resolved);
+  return resolved;
 }
 
 function expectedHeadwayMin(route, pattern, now = new Date()) {
-  return busLookupInterpolated(route, pattern, 'headways', now);
+  const grp = resolvePatternGroup({ ...pattern, route });
+  if (!grp?.headways) return null;
+  return interpolatedHourlyLookup(grp.headways, now);
 }
 
 function expectedTripMinutes(route, pattern, now = new Date()) {
-  return busLookupInterpolated(route, pattern, 'durations', now);
+  const grp = resolvePatternGroup({ ...pattern, route });
+  if (!grp?.durations) return null;
+  return interpolatedHourlyLookup(grp.durations, now);
 }
 
 // Ground-truth count of trips scheduled to be in-progress at some point during
@@ -277,14 +324,31 @@ function trainLookup(line, destination, field, now) {
   return hourlyLookup(dirInfo[field], now);
 }
 
-function trainLookupInterpolated(line, destination, field, now) {
+// Refine pickTrainDirInfo to the indexed pattern group whose terminal is
+// closest to `destination` — short-turns (e.g. Howard→Roosevelt) carry their
+// own headway, distinct from the through run. Falls back to the direction-level
+// dominant pattern when there's no destination or no pattern list.
+function pickTrainPattern(line, destination) {
   const dirInfo = pickTrainDirInfo(line, destination);
-  if (!dirInfo?.[field]) return null;
-  return interpolatedHourlyLookup(dirInfo[field], now);
+  if (!dirInfo) return null;
+  if (!dirInfo.patterns?.length || !destination || destination.lat == null) return dirInfo;
+  let best = null;
+  let bestDist = Infinity;
+  for (const p of dirInfo.patterns) {
+    if (p.terminalLat == null) continue;
+    const d = haversineFt({ lat: p.terminalLat, lon: p.terminalLon }, destination);
+    if (d < bestDist) {
+      bestDist = d;
+      best = p;
+    }
+  }
+  return best && bestDist <= PATTERN_MATCH_TOLERANCE_FT ? best : dirInfo;
 }
 
 function expectedTrainHeadwayMin(line, destination, now = new Date()) {
-  return trainLookupInterpolated(line, destination, 'headways', now);
+  const grp = pickTrainPattern(line, destination);
+  if (!grp?.headways) return null;
+  return interpolatedHourlyLookup(grp.headways, now);
 }
 
 // Line-wide headway when no destination is available — used by the pulse
@@ -308,7 +372,9 @@ function expectedTrainHeadwayMinAnyDir(line, now = new Date()) {
 }
 
 function expectedTrainTripMinutes(line, destination, now = new Date()) {
-  return trainLookupInterpolated(line, destination, 'durations', now);
+  const grp = pickTrainPattern(line, destination);
+  if (!grp?.durations) return null;
+  return interpolatedHourlyLookup(grp.durations, now);
 }
 
 function expectedTrainActiveTrips(line, destination, now = new Date()) {
@@ -391,6 +457,7 @@ module.exports = {
   expectedTrainDispatchesInWindow,
   isTrainLoopLine,
   resolveDirection,
+  matchPattern,
   dayTypeFor,
   chicagoHour,
   chicagoMinuteOfHour,

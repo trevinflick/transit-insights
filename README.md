@@ -175,7 +175,7 @@ Each major feature has a deep-dive doc in [`docs/`](docs/):
 
 ### Data sources
 - **CTA Bus Tracker** and **CTA Train Tracker** APIs — live vehicle positions, polled by each script for its detection window.
-- **GTFS static feed** — the scheduled baseline for gap and ghost detection. Rebuilt daily from the CTA's published bundle into `data/gtfs/index.json`, a compact `(route/line, direction, day_type, hour) → { median headway, median trip duration }` lookup.
+- **GTFS static feed** — the scheduled baseline for gap and ghost detection. Rebuilt daily from the CTA's published bundle into `data/gtfs/index.json`. Headways/durations are keyed **per pattern** — `(route/line, direction) → patterns[]`, where each pattern is one origin→dest terminal pair with its own `(day_type, hour) → { median headway, median trip duration }`. Measuring within a single pattern keeps short-turns and branches from corrupting the median (mixing them per-direction read the 66 at ~6 min vs a true 30 overnight). A live vehicle's pattern is matched to a group by its endpoint coordinates.
 - **OpenStreetMap (Overpass)** — traffic signal nodes inside a Chicago bounding box, used to annotate bus bunching timelapses. Rebuilt monthly.
 - **Mapbox Static Images API** — base maps for every rendered image.
 

@@ -4,6 +4,7 @@ const {
   hourlyLookup,
   expectedHeadwayMin,
   resolveDirection,
+  matchPattern,
   expectedTrainActiveTripsAnyDir,
 } = require('../../src/shared/gtfs');
 
@@ -157,4 +158,53 @@ test('expectedTrainActiveTripsAnyDir is non-negative for known lines', () => {
     const v = expectedTrainActiveTripsAnyDir(line, TUE_2PM);
     assert.ok(typeof v === 'number' && v >= 0, `${line} returned ${v}`);
   }
+});
+
+// --- matchPattern: per-pattern (origin → dest) resolution -------------------
+// Synthetic 66-style patterns: a through run Austin → downtown and an owl
+// short-turn Austin → Pulaski sharing the same origin terminal.
+const PATTERNS_66 = [
+  {
+    name: 'through',
+    originLat: 41.8949,
+    originLon: -87.7748,
+    terminalLat: 41.8837,
+    terminalLon: -87.6278,
+  },
+  {
+    name: 'shortturn',
+    originLat: 41.8949,
+    originLon: -87.7748,
+    terminalLat: 41.8951,
+    terminalLon: -87.725,
+  },
+];
+const AUSTIN = { lat: 41.8949, lon: -87.7748 };
+
+test('matchPattern: live through run snaps to the downtown pattern', () => {
+  const m = matchPattern(PATTERNS_66, AUSTIN, { lat: 41.8837, lon: -87.6278 });
+  assert.equal(m?.name, 'through');
+});
+
+test('matchPattern: live short-turn snaps to the Pulaski pattern (shared origin)', () => {
+  // Ends mid-route at Pulaski — must NOT snap to the through run despite the
+  // identical origin. This is the 66 owl case that corrupted the old median.
+  const m = matchPattern(PATTERNS_66, AUSTIN, { lat: 41.8951, lon: -87.725 });
+  assert.equal(m?.name, 'shortturn');
+});
+
+test('matchPattern: no group within tolerance returns null (caller falls back)', () => {
+  // Ends at O'Hare — miles from either terminal.
+  const m = matchPattern(PATTERNS_66, AUSTIN, { lat: 41.9786, lon: -87.9047 });
+  assert.equal(m, null);
+});
+
+test('matchPattern: empty/undefined pattern list returns null', () => {
+  assert.equal(matchPattern([], AUSTIN, AUSTIN), null);
+  assert.equal(matchPattern(undefined, AUSTIN, AUSTIN), null);
+});
+
+test('matchPattern: groups missing terminal coords are skipped', () => {
+  const pats = [{ name: 'noterm', originLat: 41.8949, originLon: -87.7748 }];
+  assert.equal(matchPattern(pats, AUSTIN, { lat: 41.8837, lon: -87.6278 }), null);
 });
