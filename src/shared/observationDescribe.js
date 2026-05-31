@@ -150,6 +150,40 @@ function describeBotResolution(incident) {
   return `${noun} ${verb} on ${article}${place}, service appears to be back to normal.`;
 }
 
+// Onset ("when the gap began") sentence for the start-of-issue timeline entry.
+// Absence-style observations (pulse-cold / thin-gap) are posted only after the
+// stretch has already been cold a while, so the export back-dates onset_ts to
+// the last observed vehicle (or, when that predates our position history, the
+// cold-threshold floor). This sentence labels that back-dated marker so the
+// event timeline has an entry at the real start, not just at detection time.
+//
+// Two registers, keyed off whether the last vehicle was actually measured:
+//   - concrete (minutesSinceLastTrain present): we watched the last vehicle go
+//     through, then silence — state it plainly.
+//   - floored (minutesSinceLastTrain null): the gap predated our window, so
+//     onset is a lower bound — hedge with "at least N min" / "or earlier".
+// Returns null for non-absence sources (the renderer omits the entry).
+function describeBotOnset(incident) {
+  if (!incident) return null;
+  if (isMergedOrAlert(incident)) return null;
+  const source = incident.detection_source;
+  if (source !== 'pulse-cold' && source !== 'thin-gap') return null;
+  const evidence = incident.evidence;
+  if (!evidence) return null;
+
+  const kind = incident.kind === 'bus' ? 'bus' : 'train';
+  const vehicle = kind === 'bus' ? 'bus' : 'train';
+  const plural = kind === 'bus' ? 'buses' : 'trains';
+  const where = evidence.synthetic ? 'on the line' : 'through this stretch';
+
+  if (evidence.minutesSinceLastTrain != null) {
+    return `Last ${vehicle} observed ${where} around here — the service gap began about now.`;
+  }
+  const floorMin = evidence.coldThresholdMin != null ? Math.round(evidence.coldThresholdMin) : null;
+  const dur = floorMin != null ? `at least ${floorMin} min` : 'a while';
+  return `No ${plural} ${where} for ${dur} when this was flagged — the gap likely began here or earlier.`;
+}
+
 // Per-signal bullet text for the roundup post body. Moved here from
 // bin/incident-roundup.js so the post composer and the web export share one
 // renderer — the roundup_anchors.bullets column stores raw {source, detail}
@@ -271,6 +305,7 @@ function describeBotEvidenceBullets(incident) {
 module.exports = {
   describeBotObservation,
   describeBotResolution,
+  describeBotOnset,
   describeSignal,
   describeBotEvidenceBullets,
   observationSignals,

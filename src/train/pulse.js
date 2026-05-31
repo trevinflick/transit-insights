@@ -45,6 +45,54 @@ const DEFAULT_MIN_SPAN_FRAC = 0.5;
 // admit path. Three trains in a row going missing isn't normal variance.
 const SOLO_EXPECTED_TRAINS = 3;
 
+// Concrete-onset recovery. A cold run is only detected once it's *already*
+// been cold a while, so the last train through it frequently predates the
+// detection lookback — leaving `lastSeenInRunMs` null and the published onset
+// falling back to the cold-threshold floor (a lower bound, not a measurement).
+// We retain ~7d of positions and already hold a 2h slice here
+// (longLookbackPositions), so we can pin a concrete start by scanning it for
+// the most recent train actually inside the stretch. Two guards keep the
+// estimate honest:
+//   - ONSET_WIDEN_CAP_MS: never back-date onset more than 2h, so a stretch
+//     cold longer than our slice stays on the floor rather than guessing.
+//   - ONSET_SERVICE_GAP_MS: if the line as a whole fell silent for ≥30 min
+//     after the run's last train (overnight / end-of-service), the last train
+//     sits on the far side of a scheduled break — clamp onset to when
+//     line-wide service resumed instead of pinning it to last night's train.
+const ONSET_WIDEN_CAP_MS = 2 * 60 * 60 * 1000;
+const ONSET_SERVICE_GAP_MS = 30 * 60 * 1000;
+
+// Most recent moment a train was actually inside [runLoFt, runHiFt] on this
+// branch within the 2h cap, guarded against crossing a line-wide service
+// break. `positions` is the 2h longLookbackPositions slice ({ts, lat, lon,
+// trDr}). Returns a ts (ms), or null when the stretch has been cold longer
+// than the cap (caller keeps the floored onset).
+function recoverConcreteOnset({ positions, points, cumDist, trDrFilter, runLoFt, runHiFt, now }) {
+  const floorTs = now - ONSET_WIDEN_CAP_MS;
+  let lastInRun = -Infinity;
+  const lineTs = [];
+  for (const p of positions) {
+    if (p.ts < floorTs) continue;
+    lineTs.push(p.ts);
+    if (trDrFilter && p.trDr !== trDrFilter) continue;
+    const { cumDist: along, perpDist } = snapToLineWithPerp(p.lat, p.lon, points, cumDist);
+    if (perpDist > MAX_PERP_FT) continue;
+    if (along >= runLoFt && along <= runHiFt && p.ts > lastInRun) lastInRun = p.ts;
+  }
+  if (lastInRun === -Infinity) return null;
+  // Overnight/service guard: a ≥30-min line-wide silence after the run's last
+  // train marks a scheduled break, not the disruption. Clamp onset to the
+  // first line-wide observation after the most recent such gap.
+  lineTs.sort((a, b) => a - b);
+  let resumedTs = null;
+  for (let i = 1; i < lineTs.length; i++) {
+    if (lineTs[i] - lineTs[i - 1] >= ONSET_SERVICE_GAP_MS && lineTs[i] > lastInRun) {
+      resumedTs = lineTs[i];
+    }
+  }
+  return resumedTs != null ? Math.max(lastInRun, resumedTs) : lastInRun;
+}
+
 // Feed-coverage guard. When the upstream Train Tracker feed / observe-trains
 // ingestion stalls, the whole fleet stops reporting at once — and when it
 // recovers it often replays stale positions for a few minutes. Both make
@@ -521,7 +569,28 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
     for (const rn of runsOnBranch) if (!runsInRun.has(rn)) trainsOutsideRun++;
 
     const lastSeenInRunMs = lastSeenInRun > -Infinity ? lastSeenInRun : null;
+    // `coldMs` / the admit gate below deliberately stay on the narrow-window
+    // value (floored to lookbackMs) so detection sensitivity is unchanged.
     const coldMs = lastSeenInRunMs ? now - lastSeenInRunMs : lookbackMs;
+    // `onsetTs` is the reported start. Concrete when we saw a train in the run
+    // within the lookback; otherwise recovered from the wider 2h slice so the
+    // published onset reflects the real gap start rather than the floor.
+    let onsetTs = lastSeenInRunMs;
+    if (
+      lastSeenInRunMs == null &&
+      opts.longLookbackPositions &&
+      opts.longLookbackPositions.length
+    ) {
+      onsetTs = recoverConcreteOnset({
+        positions: opts.longLookbackPositions,
+        points,
+        cumDist,
+        trDrFilter,
+        runLoFt,
+        runHiFt,
+        now,
+      });
+    }
     const expectedTrains = headwayMin ? Math.floor(coldMs / 60_000 / headwayMin) : null;
     const coldStations = stationsInRun.length;
     const coldStationNames = stationsInRun.map((s) => s.station.name);
@@ -670,6 +739,7 @@ function detectDeadSegments({ line, trainLines, stations, headwayMin, now, opts 
       totalBins: numBins,
       observedTrainsInWindow: runsOnBranch.size,
       lastSeenInRunMs,
+      onsetTs,
       coldThresholdMs,
       lookbackMs,
       trainsOutsideRun,
@@ -753,6 +823,8 @@ function nearestStationAtOrAfter(stationsOnBranch, ft) {
 module.exports = {
   detectDeadSegments,
   detectFeedGap,
+  recoverConcreteOnset,
+  ONSET_WIDEN_CAP_MS,
   FEED_GAP_LOOKBACK_MS,
   FEED_GAP_MS,
   stationsAlongBranch,

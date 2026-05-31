@@ -261,6 +261,15 @@ If there's an open CTA alert post for the same line in our DB, the pulse post is
 
 The same `Disruption` shape and renderer are reused by `bin/train/disruption.js`, which lets an operator manually post a disruption from CLI args (typically copying CTA alert info verbatim before the auto-republisher catches up). The auto-detector and the manual command share everything downstream of the `Disruption` object.
 
+#### Onset back-dating (`minutesSinceLastTrain`)
+
+A cold run is only posted once it's *already* been cold a while, so the back-dated start (`onset_ts` on the web export, derived from `evidence.minutesSinceLastTrain`) matters for the reported duration. Two regimes:
+
+- **Concrete** — a train was seen inside the run within the detection lookback. `lastSeenInRunMs` is set and `minutesSinceLastTrain = now − lastSeenInRunMs` is a measured value.
+- **Recovered** — no train appeared in the run within the (short) lookback, so the narrow-window value is null. Rather than floor `onset_ts` to the cold threshold (a lower bound), `recoverConcreteOnset` (`src/train/pulse.js`) scans the wider **2h** position slice (`longLookbackPositions`) for the most recent train actually inside `[runLoFt, runHiFt]`. Two guards keep it honest: a **2h cap** (`ONSET_WIDEN_CAP_MS`) so a stretch cold longer than the slice stays floored, and a **service-gap guard** (`ONSET_SERVICE_GAP_MS = 30 min`) — if the line as a whole fell silent after the run's last train (overnight / end-of-service), onset is clamped to when line-wide service resumed rather than pinned to the prior night's final train.
+
+The admit gate (`coldMs` / `passLong`/`passMulti`/`passSolo`) deliberately stays on the narrow-window value, so onset recovery changes only the *reported* start, never detection sensitivity. Events already on record when this shipped were backfilled once from retained positions (7-day retention bounded how far back that reached); the live detector handles everything from then on.
+
 ### Step 6 — bot-side clear
 
 When `pulse_state` rolls off after `CLEAR_TICKS_TO_RESET = 3` clean ticks, `bin/train/pulse.js#postClearReply` posts a `✅ <Line> trains running through X ↔ Y again` reply directly under `active_post_uri` (the pinned URI on the pulse_state row) and releases the per-segment cooldown so a fresh outage on the same stretch can post immediately. The previous 24h time-window lookup to find the pulse post is gone — pinning is exact, so a clear can't accidentally reply under a different recent pulse on the same line. Two safeguards:

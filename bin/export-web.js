@@ -18,6 +18,7 @@ const Database = require('better-sqlite3');
 const {
   describeBotObservation,
   describeBotResolution,
+  describeBotOnset,
   describeBotEvidenceBullets,
   normalizeTrainLine,
 } = require('../src/shared/observationDescribe');
@@ -454,6 +455,11 @@ function main() {
       // for non-absence observations the start is just `ts` and onset_ts is null.
       return backdateMin != null ? row.ts - backdateMin * 60_000 : null;
     })();
+    // Onset timeline-entry text — only when we back-dated to a start
+    // meaningfully (≥5 min) before the post time. Gated alongside onset_ts so
+    // the renderer never shows a "started here" dot a minute before detection.
+    const onsetDescription =
+      onsetTs != null && row.ts - onsetTs >= 5 * 60_000 ? describeBotOnset(describeShape) : null;
     return {
       id: row.id,
       kind: row.kind,
@@ -492,6 +498,9 @@ function main() {
       ...(botEvidenceBullets && botEvidenceBullets.length > 0
         ? { bot_evidence_bullets: botEvidenceBullets }
         : {}),
+      // Sentence for the onset timeline entry (start-of-issue). Omitted when
+      // there's no meaningful back-date — renderer then shows no onset dot.
+      ...(onsetDescription ? { onset_description: onsetDescription } : {}),
     };
   });
 

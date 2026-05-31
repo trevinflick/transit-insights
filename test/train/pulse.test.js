@@ -235,3 +235,109 @@ test('ignores terminal zones at both ends', () => {
     assert.ok(c.runHiFt < TOTAL_FT);
   }
 });
+
+// ── Concrete-onset recovery ────────────────────────────────────────────────
+// A position for the wider 2h slice (longLookbackPositions shape: no rn).
+function longPos(ft, ts) {
+  const p = pointAtFt(TOTAL_FT, ft);
+  return { ts, lat: p.lat, lon: p.lon, trDr: '1' };
+}
+
+// A cold run with no train inside it within the lookback (lastSeenInRunMs
+// null), but a train sat in that stretch 90 min ago: the wider slice recovers
+// the concrete start instead of leaving it floored.
+function coldMiddleRecent(now) {
+  const recent = [];
+  for (let ft = 6000; ft <= 20000; ft += 2000) recent.push(position(ft, now - 2 * 60 * 1000));
+  for (let ft = 55000; ft <= 74000; ft += 2000) recent.push(position(ft, now - 3 * 60 * 1000));
+  return recent;
+}
+
+test('recovers a concrete onset from the wider window when the run went cold before the lookback', () => {
+  const now = 1_700_000_000_000;
+  const stations = buildStations();
+  const onsetTrueTs = now - 90 * 60 * 1000;
+  const longLookback = [];
+  // Steady line-wide service outside the run so the service-gap guard is inert.
+  for (let t = 120; t >= 0; t -= 5) longLookback.push(longPos(6000, now - t * 60 * 1000));
+  // The last train actually inside the (now-cold) middle, 90 min ago.
+  longLookback.push(longPos(37000, onsetTrueTs));
+
+  const { candidates } = detectDeadSegments({
+    line: 'red',
+    observations: [],
+    trainLines,
+    stations,
+    headwayMin: 7,
+    now,
+    opts: {
+      recentPositions: coldMiddleRecent(now),
+      longLookbackPositions: longLookback,
+      minRunFt: 5000,
+      minCoverageFrac: 0,
+      minSpanFrac: 0,
+    },
+  });
+  const c = candidates[0];
+  assert.ok(c, 'should flag a candidate');
+  assert.equal(c.lastSeenInRunMs, null, 'no train in run within the lookback');
+  assert.equal(c.onsetTs, onsetTrueTs, 'onset recovered to the last in-run train 90 min ago');
+});
+
+test('does not back-date onset past the 2h cap', () => {
+  const now = 1_700_000_000_000;
+  const stations = buildStations();
+  const longLookback = [];
+  for (let t = 200; t >= 0; t -= 5) longLookback.push(longPos(6000, now - t * 60 * 1000));
+  // Last in-run train 2.5h ago — beyond the 2h cap, so it must not be used.
+  longLookback.push(longPos(37000, now - 150 * 60 * 1000));
+
+  const { candidates } = detectDeadSegments({
+    line: 'red',
+    observations: [],
+    trainLines,
+    stations,
+    headwayMin: 7,
+    now,
+    opts: {
+      recentPositions: coldMiddleRecent(now),
+      longLookbackPositions: longLookback,
+      minRunFt: 5000,
+      minCoverageFrac: 0,
+      minSpanFrac: 0,
+    },
+  });
+  const c = candidates[0];
+  assert.ok(c, 'should flag a candidate');
+  assert.equal(c.onsetTs, null, 'in-run train older than the 2h cap stays floored');
+});
+
+test('clamps onset to service resumption across an end-of-service gap', () => {
+  const now = 1_700_000_000_000;
+  const stations = buildStations();
+  const resumeTs = now - 50 * 60 * 1000;
+  const longLookback = [];
+  // Last in-run train 100 min ago, then the line falls silent for ~50 min
+  // (scheduled break), then service resumes 50 min ago and runs steadily.
+  longLookback.push(longPos(37000, now - 100 * 60 * 1000));
+  for (let t = 50; t >= 0; t -= 5) longLookback.push(longPos(6000, now - t * 60 * 1000));
+
+  const { candidates } = detectDeadSegments({
+    line: 'red',
+    observations: [],
+    trainLines,
+    stations,
+    headwayMin: 7,
+    now,
+    opts: {
+      recentPositions: coldMiddleRecent(now),
+      longLookbackPositions: longLookback,
+      minRunFt: 5000,
+      minCoverageFrac: 0,
+      minSpanFrac: 0,
+    },
+  });
+  const c = candidates[0];
+  assert.ok(c, 'should flag a candidate');
+  assert.equal(c.onsetTs, resumeTs, 'onset clamped to when line-wide service resumed');
+});

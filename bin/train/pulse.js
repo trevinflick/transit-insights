@@ -153,6 +153,15 @@ async function handleCandidate(line, direction, candidate, agentGetter, now) {
     }
   }
 
+  // Minutes since the last train through the stretch, preferring the concrete
+  // onset recovered from the wider 2h position history over the narrow-window
+  // last-seen. Null only when even that slice saw no train in the run (the gap
+  // predates the 2h cap) — the web export then floors onset to the cold
+  // threshold. Drives the back-dated onset_ts / duration on the event page.
+  const onsetSourceTs = candidate.onsetTs ?? candidate.lastSeenInRunMs ?? null;
+  const minutesSinceLastTrain =
+    onsetSourceTs != null ? Math.round((now - onsetSourceTs) / 60000) : null;
+
   const segmentTag = stableSegmentTag(candidate);
   const cooldownKey = `train_pulse_${line}_${direction}_${segmentTag}`;
   const activePostUri = prior?.active_post_uri || null;
@@ -209,10 +218,7 @@ async function handleCandidate(line, direction, candidate, agentGetter, now) {
         // Cold-timing fields so when this signal gets bundled into a roundup,
         // the persisted bullets carry enough to back-date duration on the web
         // event page (see bin/export-web.js duration_ms logic).
-        minutesSinceLastTrain:
-          candidate.lastSeenInRunMs != null
-            ? Math.round((now - candidate.lastSeenInRunMs) / 60000)
-            : null,
+        minutesSinceLastTrain,
         coldThresholdMin:
           candidate.coldThresholdMs != null ? Math.round(candidate.coldThresholdMs / 60000) : null,
       },
@@ -236,10 +242,7 @@ async function handleCandidate(line, direction, candidate, agentGetter, now) {
     detectedAt: now,
     evidence: {
       runLengthMi: Math.round((candidate.runLengthFt / 5280) * 10) / 10,
-      minutesSinceLastTrain:
-        candidate.lastSeenInRunMs != null
-          ? Math.round((now - candidate.lastSeenInRunMs) / 60000)
-          : null,
+      minutesSinceLastTrain,
       lookbackMin: Math.round(candidate.lookbackMs / 60000),
       coldThresholdMin: Math.round(candidate.coldThresholdMs / 60000),
       trainsOutsideRun: candidate.trainsOutsideRun,

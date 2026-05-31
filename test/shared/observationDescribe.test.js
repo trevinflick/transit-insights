@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   describeBotObservation,
   describeBotResolution,
+  describeBotOnset,
   describeBotEvidenceBullets,
 } = require('../../src/shared/observationDescribe');
 
@@ -208,4 +209,70 @@ test('describeBotEvidenceBullets: null when source unrecognized or evidence miss
     }),
     null,
   );
+});
+
+test('describeBotOnset: concrete start when the last train was measured', () => {
+  assert.equal(
+    describeBotOnset({
+      kind: 'train',
+      line: 'green',
+      detection_source: 'pulse-cold',
+      evidence: { minutesSinceLastTrain: 42, coldThresholdMin: 30 },
+    }),
+    'Last train observed through this stretch around here — the service gap began about now.',
+  );
+});
+
+test('describeBotOnset: floored start when the gap predated our window', () => {
+  assert.equal(
+    describeBotOnset({
+      kind: 'train',
+      line: 'green',
+      detection_source: 'pulse-cold',
+      evidence: { minutesSinceLastTrain: null, coldThresholdMin: 75 },
+    }),
+    'No trains through this stretch for at least 75 min when this was flagged — the gap likely began here or earlier.',
+  );
+});
+
+test('describeBotOnset: bus thin-gap uses bus wording', () => {
+  assert.equal(
+    describeBotOnset({
+      kind: 'bus',
+      line: '66',
+      detection_source: 'thin-gap',
+      evidence: { minutesSinceLastTrain: 25, coldThresholdMin: 30 },
+    }),
+    'Last bus observed through this stretch around here — the service gap began about now.',
+  );
+});
+
+test('describeBotOnset: synthetic full-line outage says "on the line"', () => {
+  assert.equal(
+    describeBotOnset({
+      kind: 'train',
+      line: 'green',
+      detection_source: 'pulse-cold',
+      evidence: { minutesSinceLastTrain: null, coldThresholdMin: 50, synthetic: true },
+    }),
+    'No trains on the line for at least 50 min when this was flagged — the gap likely began here or earlier.',
+  );
+});
+
+test('describeBotOnset: null for non-absence sources and merged incidents', () => {
+  assert.equal(
+    describeBotOnset({ kind: 'train', line: 'red', detection_source: 'roundup', evidence: {} }),
+    null,
+  );
+  assert.equal(
+    describeBotOnset({
+      kind: 'train',
+      line: 'red',
+      detection_source: 'pulse-cold',
+      alert_id: 7,
+      evidence: { minutesSinceLastTrain: 10 },
+    }),
+    null,
+  );
+  assert.equal(describeBotOnset(null), null);
 });
