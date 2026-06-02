@@ -375,8 +375,25 @@ async function renderBunchingFrame(view, baseMap, vehicles, signals = [], stops 
         const tw = await measureTextWidth(name, fontSize, { bold: true });
         const boxW = tw + 16;
         const perp = perpendicularFromBearing(view.bearingDeg);
-        const lx = Math.max(4, Math.min(WIDTH - boxW - 4, x + perp.x * 26 - boxW / 2));
-        const ly = Math.max(4, Math.min(HEIGHT - labelH - 4, y + perp.y * 26 - labelH / 2));
+        // Push the label clear of a bus marker parked on the stop (the next bus
+        // ends the clip right on this stop), then flip to the other side if that
+        // candidate still overlaps a vehicle — so the label is never buried under
+        // a disc. Offset = marker radius + half the label + a small gap.
+        const off = BUS_MARKER_RADIUS + labelH / 2 + 10;
+        const overlapsVehicle = (cx, cy) =>
+          markerPixels.some(
+            (m) =>
+              Math.abs(m.x - cx) < BUS_MARKER_RADIUS + boxW / 2 &&
+              Math.abs(m.y - cy) < BUS_MARKER_RADIUS + labelH / 2,
+          );
+        let cx = x + perp.x * off;
+        let cy = y + perp.y * off;
+        if (overlapsVehicle(cx, cy)) {
+          cx = x - perp.x * off;
+          cy = y - perp.y * off;
+        }
+        const lx = Math.max(4, Math.min(WIDTH - boxW - 4, cx - boxW / 2));
+        const ly = Math.max(4, Math.min(HEIGHT - labelH - 4, cy - labelH / 2));
         highlightElements.push(
           `<rect x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" width="${boxW.toFixed(1)}" height="${labelH}" fill="#ffb020" rx="3"/>`,
           `<text x="${(lx + boxW / 2).toFixed(1)}" y="${(ly + fontSize + 5).toFixed(1)}" fill="#1c1c1c" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700">${xmlEscape(name)}</text>`,

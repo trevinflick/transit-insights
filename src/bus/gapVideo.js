@@ -13,7 +13,7 @@ const {
   renderBunchingFrame,
 } = require('../map');
 const { attachTrails } = require('./bunchingVideo');
-const { cumulativeDistances } = require('../shared/geo');
+const { cumulativeDistances, haversineFt } = require('../shared/geo');
 const { smoothSeries } = require('../shared/stats');
 const { snapToLine, pointAlongLine } = require('../train/speedmap');
 
@@ -51,6 +51,24 @@ function gapReadout(gapMin, stopName, deltaFt) {
 function patternLine(pattern) {
   const linePts = pattern.points.map((p) => [p.lat, p.lon]);
   return { linePts, lineCum: cumulativeDistances(pattern.points) };
+}
+
+// Cumulative distance of the pattern vertex nearest a vehicle. The gap dash is
+// split at pattern vertices (not the bus's snapped track) so the solid `before`
+// slice and the dashed `inner` slice share a boundary vertex — otherwise the
+// segment straddling the split is drawn by neither, leaving a bare break right
+// under the bus. Matches the still gap map's vertex-based slice.
+function nearestVertexCum(points, cum, v) {
+  let bestIdx = 0;
+  let bestDist = haversineFt(v, points[0]);
+  for (let i = 1; i < points.length; i++) {
+    const d = haversineFt(v, points[i]);
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i;
+    }
+  }
+  return cum[bestIdx];
 }
 
 // Poll the trailing ("Next up") bus over the clip window. Returns null when the
@@ -127,13 +145,22 @@ async function renderBusGapClip(snapshots, gap, pattern, stop, opts = {}) {
 
   const trailingPath = snapshots.map((s) => ({ lat: s.vehicle.lat, lon: s.vehicle.lon }));
   const bunch = { route: gap.route, pid: gap.pid, vehicles: [snapshots[0].vehicle] };
+  // Frame the trailing bus's approach to the midpoint wait stop — the leading
+  // bus is left out of the bbox (it can sit far up-route), so on a deep gap the
+  // dash simply runs off the frame toward it. Keeps the bus large.
   const extra = [...trailingPath, { lat: stop.lat, lon: stop.lon }];
   const view = computeBunchingView(bunch, pattern, extra);
-  // Dash the gap stretch the next bus still has to cover — from its starting
-  // position up to the midpoint wait stop — in the route color, matching the
-  // still gap map. Static for the whole clip (the bus drives across it); the
-  // base map is fetched once so the dashed stretch can't follow the bus.
-  applyGapDashToView(view, pattern, snapshots[0].vehicle.track, stopTrack);
+  // Dash the *full* gap — from the trailing ("Next up") bus to the leading
+  // ("Last seen") bus — in the route color, identical to the still gap map.
+  // (Earlier this dashed only trailing→midpoint, leaving the back half of the
+  // gap solid and out of sync with the still.) Split at pattern vertices so the
+  // solid `before` slice and the dashed `inner` slice share a boundary vertex —
+  // otherwise the straddling segment is drawn by neither and leaves a bare break
+  // right under the bus. Static for the whole clip (the bus drives across it);
+  // the base map is fetched once so the dashed stretch can't follow the bus.
+  const leadCum = nearestVertexCum(pattern.points, lineCum, gap.leading);
+  const trailCum = nearestVertexCum(pattern.points, lineCum, gap.trailing);
+  applyGapDashToView(view, pattern, Math.min(leadCum, trailCum), Math.max(leadCum, trailCum));
   const baseMap = await fetchBunchingBaseMap(view);
 
   // The trailing bus keeps the "N" (Next up) chip it carries on the still map.

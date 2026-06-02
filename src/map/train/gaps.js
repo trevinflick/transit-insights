@@ -128,17 +128,21 @@ function computeTrainGapVideoView(gap, trailingPath, lineColors, trainLines, sta
     }
   }
 
-  // Dash the gap stretch the next train still has to cover — from its starting
-  // position up to the midpoint wait stop — in the line color, matching the
-  // still gap map. The bunching framing bakes the full solid route; rebuild it
-  // to run solid only outside [lo, hi] so the dashes (drawn by the frame
-  // renderer) show on bare basemap. Static for the whole clip (the train drives
-  // across it); the base map is fetched once so the stretch can't follow it.
+  // Dash the *full* gap — from the trailing ("Next up") train to the leading
+  // ("Last seen") train — in the line color, identical to the still gap map.
+  // (Earlier this dashed only trailing→midpoint, leaving the back half of the
+  // gap solid and out of sync with the still.) The leading train stays out of
+  // the bbox (it can sit miles off near a terminal), so on a deep gap the dash
+  // simply runs off the frame toward it. The bunching framing bakes the full
+  // solid route; rebuild it to run solid only outside [lo, hi] so the dashes
+  // (drawn by the frame renderer) show on bare basemap. Static for the whole
+  // clip (the train drives across it); the base map is fetched once so the
+  // stretch can't follow it.
   const { points, cumDist } = buildLinePolyline(trainLines, gap.line);
   const startPt = trailingPath?.[0];
   if (points.length >= 2 && startPt && stop?.lat != null && stop?.lon != null) {
-    const lo = snapToLine(startPt.lat, startPt.lon, points, cumDist);
-    const hi = snapToLine(stop.lat, stop.lon, points, cumDist);
+    const lo = Math.min(gap.leadingTrackDist, gap.trailingTrackDist);
+    const hi = Math.max(gap.leadingTrackDist, gap.trailingTrackDist);
     if (hi > lo) {
       const loPt = pointAlongLine(points, cumDist, lo);
       const hiPt = pointAlongLine(points, cumDist, hi);

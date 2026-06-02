@@ -202,8 +202,14 @@ async function renderGapMap(gap, pattern, stop = null) {
     // heuristic left a wide band of dead padding around shorter names.
     const textW = await measureTextWidth(rawName, fontSize, { bold: true });
     const boxW = textW + 16; // 8px padding each side
-    const lx = Math.max(4, Math.min(WIDTH - boxW - 4, sx - boxW / 2));
-    const ly = Math.max(4, Math.min(HEIGHT - labelH - 4, sy + 24));
+    // Ride the label *outward* of the stop on the perpendicular (off-route) side,
+    // far enough to clear a bus marker on the route. It used to sit just below the
+    // sign — which landed back on the line, where a bus by the stop covered it.
+    const labelOff = BUS_MARKER_RADIUS + labelH / 2 + 12;
+    const cx = x + perp.x * labelOff;
+    const cy = y + perp.y * labelOff;
+    const lx = Math.max(4, Math.min(WIDTH - boxW - 4, cx - boxW / 2));
+    const ly = Math.max(4, Math.min(HEIGHT - labelH - 4, cy - labelH / 2));
     stopElements.push(
       `<rect x="${lx}" y="${ly}" width="${boxW}" height="${labelH}" fill="#000" fill-opacity="0.8" rx="3"/>`,
       `<text x="${lx + boxW / 2}" y="${ly + 18}" fill="#fff" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="600">${xmlEscape(rawName)}</text>`,
