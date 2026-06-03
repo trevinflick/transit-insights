@@ -43,8 +43,14 @@ function buildBusAlertAltText({ alert, routes }) {
 function buildResolutionReplyText({ alert, kind }) {
   const prefix =
     kind === 'train' ? `${EMOJI_TRAIN}${EMOJI_RESOLVED}` : `${EMOJI_BUS}${EMOJI_RESOLVED}`;
+  return `${prefix} ${buildResolutionReplyCardTitle({ alert })}`;
+}
+
+// Clean link-card headline — the resolution reply without the leading emoji.
+// CTA's headline text is left as-is (we don't rewrite official wording).
+function buildResolutionReplyCardTitle({ alert }) {
   const head = alert.headline || 'Service alert';
-  return `${prefix} CTA has cleared: ${truncateSentence(head, 240)}`;
+  return `CTA has cleared: ${truncateSentence(head, 240)}`;
 }
 
 function truncateSentence(s, maxChars) {
@@ -61,4 +67,5 @@ module.exports = {
   buildAlertAltText,
   buildBusAlertAltText,
   buildResolutionReplyText,
+  buildResolutionReplyCardTitle,
 };

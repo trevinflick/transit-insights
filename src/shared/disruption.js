@@ -5,7 +5,7 @@
 // `source` drives footer phrasing: 'cta-alert' quotes CTA, 'observed' makes
 // clear the bot is inferring from live positions.
 
-const { LINE_NAMES } = require('../train/api');
+const { LINE_NAMES, shortStationName } = require('../train/api');
 
 // Static terminus fallback per line + direction for round-trip Loop lines.
 // Used only when the detector didn't supply an empirical destination — see
@@ -209,6 +209,17 @@ function buildClearPostText(d, { ctaAlertOpen = false } = {}) {
   return `🚇✅ ${lineName} Line trains running through ${segment} again. (No relevant CTA alert was posted.)`;
 }
 
+// Concise headline for the resolution link card. Trims what the post body
+// carries for the skeet (emoji, the CTA-alert clause) and drops station
+// line-qualifiers ("Chicago (Brown/Purple)" → "Chicago"), so the tappable card
+// reads as a clean one-liner. The full framing stays in the post body via
+// buildClearPostText — this changes the card only.
+function buildClearCardTitle(d) {
+  const lineName = LINE_NAMES[d.line] || d.line;
+  const segment = `${shortStationName(d.suspendedSegment.from)} ↔ ${shortStationName(d.suspendedSegment.to)}`;
+  return `${lineName} Line trains running through ${segment} again`;
+}
+
 function buildBusPostText(
   { route, name, lookbackMin, minHeadwayMin },
   { ctaAlertOpen = false } = {},
@@ -248,13 +259,21 @@ function buildBusClearPostText({ route, name }, { ctaAlertOpen = false } = {}) {
   return `🚌✅ #${route} ${name} buses observed again. (No relevant CTA alert was posted.)`;
 }
 
+// Clean link-card headline for the bus pulse recovery — drops the body's emoji
+// and CTA clause (mirror of buildClearCardTitle for trains).
+function buildBusClearCardTitle({ route, name }) {
+  return `#${route} ${name || route} buses observed again`;
+}
+
 module.exports = {
   buildPostText,
   buildAltText,
   buildClearPostText,
+  buildClearCardTitle,
   buildBusPostText,
   buildBusHeldPostText,
   buildBusClearPostText,
+  buildBusClearCardTitle,
   titleFor,
   footerFor,
   evidenceLine,

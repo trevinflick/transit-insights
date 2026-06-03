@@ -276,10 +276,18 @@ async function findOpenAlertReplyRefForRoundup(agent, kind, line) {
   return resolveReplyRef(agent, row.post_uri);
 }
 
+function roundupResolutionLabel({ kind, line, name }) {
+  return kind === 'bus' ? `#${line} ${name || line}` : `${lineLabel(line)} Line`;
+}
+
 function buildResolutionText({ kind, line, name }) {
-  const label = kind === 'bus' ? `#${line} ${name || line}` : `${lineLabel(line)} Line`;
   const prefix = kind === 'bus' ? '🚌✅' : '🚇✅';
-  return `${prefix} ${label} · service signals back to normal`;
+  return `${prefix} ${roundupResolutionLabel({ kind, line, name })} · service signals back to normal`;
+}
+
+// Clean link-card headline — the resolution text without the leading emoji.
+function buildResolutionCardTitle({ kind, line, name }) {
+  return `${roundupResolutionLabel({ kind, line, name })} · service signals back to normal`;
 }
 
 async function sweepResolutions({ kind, getName, agentGetter, now }) {
@@ -311,7 +319,10 @@ async function sweepResolutions({ kind, getName, agentGetter, now }) {
       continue;
     }
     const text = buildResolutionText({ kind, line: row.line, name: getName(row.line) });
-    const link = resolvedEventLink(row.post_uri, text);
+    const link = resolvedEventLink(
+      row.post_uri,
+      buildResolutionCardTitle({ kind, line: row.line, name: getName(row.line) }),
+    );
     if (DRY_RUN) {
       console.log(`--- DRY RUN roundup-resolve ${label} (link: ${link?.url}) ---\n${text}`);
       continue;

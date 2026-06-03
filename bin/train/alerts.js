@@ -25,6 +25,7 @@ const {
   buildAlertPostText,
   buildAlertAltText,
   buildResolutionReplyText,
+  buildResolutionReplyCardTitle,
 } = require('../../src/shared/alertPost');
 const {
   getAlertPost,
@@ -231,7 +232,10 @@ async function postResolution(alertRow, agentGetter) {
     // in the same thread instead of starting a sub-thread.
     const replyRef = await resolveReplyRef(agent, alertRow.post_uri);
     if (!replyRef) throw new Error('could not resolve reply ref for alert post');
-    const link = resolvedEventLink(alertRow.post_uri, text);
+    const link = resolvedEventLink(
+      alertRow.post_uri,
+      buildResolutionReplyCardTitle({ alert: pseudoAlert }),
+    );
     const result = link
       ? await postTextWithLinkCard(agent, text, replyRef, link)
       : await postText(agent, text, replyRef);

@@ -49,7 +49,12 @@ const {
 } = require('../../src/shared/bluesky');
 const { resolvedEventLink } = require('../../src/shared/eventLink');
 const { renderDisruption } = require('../../src/map');
-const { buildPostText, buildAltText, buildClearPostText } = require('../../src/shared/disruption');
+const {
+  buildPostText,
+  buildAltText,
+  buildClearPostText,
+  buildClearCardTitle,
+} = require('../../src/shared/disruption');
 const {
   expectedTrainHeadwayMin,
   expectedTrainHeadwayMinAnyDir,
@@ -447,7 +452,9 @@ async function postClearReply(line, direction, prior, agentGetter) {
     console.warn(`[${lineLabel(line)}/${direction}] could not resolve reply ref for clear post`);
     return;
   }
-  const link = resolvedEventLink(prior.active_post_uri, text);
+  // Card title is a trimmed one-liner (no emoji / CTA clause / station
+  // line-qualifiers); the post body (`text`) keeps the full framing.
+  const link = resolvedEventLink(prior.active_post_uri, buildClearCardTitle(disruption));
   const result = link
     ? await postTextWithLinkCard(agent, text, replyRef, link)
     : await postText(agent, text, replyRef);

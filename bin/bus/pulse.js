@@ -30,6 +30,7 @@ const { renderBusDisruptionRich } = require('../../src/map');
 const {
   buildBusPostText,
   buildBusClearPostText,
+  buildBusClearCardTitle,
   buildBusHeldPostText,
 } = require('../../src/shared/disruption');
 const {
@@ -371,7 +372,7 @@ async function postClearReply(route, prior, agentGetter) {
     console.warn(`[bus/${route}] could not resolve reply ref for clear post`);
     return;
   }
-  const link = resolvedEventLink(prior.active_post_uri, text);
+  const link = resolvedEventLink(prior.active_post_uri, buildBusClearCardTitle({ route, name }));
   const result = link
     ? await postTextWithLinkCard(agent, text, replyRef, link)
     : await postText(agent, text, replyRef);
