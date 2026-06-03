@@ -58,7 +58,14 @@ The backup script keeps only 2 local copies; remote retention is handled by an
 R2 lifecycle rule rather than scripted deletes (safer — the server can't
 accidentally wipe history). In the dashboard: **R2 → cta-insights-db-backups →
 Settings → Object lifecycle rules → Add rule → delete objects N days after
-creation** (30 days is a reasonable default at this size/cost).
+creation**.
+
+Retention is **7 days** to stay inside R2's 10 GB free tier: each snapshot is
+~320 MB, so 7 days ≈ 2.2 GB (vs. ~9.5 GB at 30 days, which would top out the
+free tier with no room for the DB to grow). Also enable **abort incomplete
+multipart uploads after 1 day** in the same rule — the server's older rclone
+uploads multipart, and a failed part would otherwise linger and accrue
+storage.
 
 ## Schedule
 
