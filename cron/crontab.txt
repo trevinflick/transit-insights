@@ -106,4 +106,11 @@ R=/path/to/cta-insights/bin/cron-run.sh
 15      3  *  *  *   $R fetch-gtfs       scripts/fetch-gtfs.js
 0       4  1  *  *   $R fetch-signals    scripts/fetch-signals.js
 
+# --- Backups ---
+# Off-box backup of state/history.sqlite to Cloudflare R2. Standalone shell
+# script (not via cron-run.sh, which is node-only); see docs/BACKUPS.md. The
+# /path/to/cta-insights placeholders are substituted by the install procedure
+# above alongside the R= line.
+17      4  *  *  *   /path/to/cta-insights/scripts/backup-db.sh >> /path/to/cta-insights/cron/backup-db-cron.log 2>&1
+
 # CTA-INSIGHTS-END
