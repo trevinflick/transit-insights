@@ -39,19 +39,23 @@ WORK="$CTA_INSIGHTS/tmp/web-data"
 LAST="$WORK/.last"
 mkdir -p "$WORK" "$LAST"
 
-# healthchecks.io ping (optional; mirrors bin/cron-run.sh). Fired from an EXIT
-# trap so it covers every exit — the no-op "no change" exit, the normal end, and
-# any set -e failure — meaning a quiet (unchanged) tick still counts as alive
-# rather than looking silent. The exit code is sent straight to healthchecks
-# (0 = success, non-zero = failure). No-op unless cron/healthchecks.env exists.
+# healthchecks.io ping (optional; mirrors bin/cron-run.sh). The completion ping
+# is fired from an EXIT trap so it covers every exit — the no-op "no change"
+# exit, the normal end, and any set -e failure — meaning a quiet (unchanged) tick
+# still counts as alive rather than looking silent. The exit code goes straight
+# to healthchecks (0 = success, non-zero = failure). A "start" ping below lets
+# healthchecks measure run duration as the gap between start and completion.
+# No-op unless cron/healthchecks.env exists.
 [ -f "$CTA_INSIGHTS/cron/healthchecks.env" ] && . "$CTA_INSIGHTS/cron/healthchecks.env"
 hc_ping() {
   [ -n "${HC_PING_KEY:-}" ] || return 0
-  # ?create=1 auto-creates the check on its first ping (no-op once it exists).
+  # $1 = "start" or the exit code. ?create=1 auto-creates the check on its first
+  # ping (no-op once it exists).
   curl -fsS -m 10 --retry 2 -X POST \
     "${HC_PING_URL:-https://hc-ping.com}/$HC_PING_KEY/push-web-data/$1?create=1" >/dev/null 2>&1 || true
 }
 trap 'hc_ping $?' EXIT
+hc_ping start  # signal start for duration measurement
 
 # 1. Export current data into the working dir (readonly DB read, cron-safe).
 node "$CTA_INSIGHTS/bin/export-web.js" "$WORK/alerts.json"
