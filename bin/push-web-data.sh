@@ -27,6 +27,14 @@ CTA_INSIGHTS="${CTA_INSIGHTS:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REMOTE="${RCLONE_REMOTE:-r2web:cta-alert-history-data}"
 DISPATCH_REPO="${DISPATCH_REPO:-cailinpitt/chicago-transit-alerts}"
 
+# Pull GITHUB_DISPATCH_TOKEN from .env when it isn't already in the environment.
+# The event-driven path inherits it via the bots' dotenv load, but the */15 cron
+# line runs under plain /bin/sh (no dotenv), so without this the cron rebuild
+# dispatch would never fire. Keep the token unquoted in .env.
+if [ -z "${GITHUB_DISPATCH_TOKEN:-}" ] && [ -f "$CTA_INSIGHTS/.env" ]; then
+  GITHUB_DISPATCH_TOKEN=$(grep -E '^GITHUB_DISPATCH_TOKEN=' "$CTA_INSIGHTS/.env" | head -1 | cut -d= -f2-)
+fi
+
 WORK="$CTA_INSIGHTS/tmp/web-data"
 LAST="$WORK/.last"
 mkdir -p "$WORK" "$LAST"
