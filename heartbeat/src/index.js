@@ -22,6 +22,10 @@ const MIN = 60_000;
 const MONITORED = {
   'observe-buses': 8 * MIN,
   'observe-trains': 8 * MIN,
+  // Publishes alerts.json + daily-counts.json to the R2 data origin. Runs every
+  // 15 min (and event-driven after posts); it pings on every exit including the
+  // no-op "no change" path, so 40 min covers two missed cycles plus grace.
+  'push-web-data': 40 * MIN,
 };
 
 const ALARM_INTERVAL_MS = 60_000;
@@ -54,12 +58,20 @@ export class HeartbeatMonitor {
 
     const ping = url.pathname.match(/^\/ping\/([A-Za-z0-9_-]+)$/);
     if (ping) {
-      if (request.method !== 'POST') return text('method not allowed', 405);
+      if (request.method !== 'POST' && request.method !== 'DELETE') {
+        return text('method not allowed', 405);
+      }
       const token = (request.headers.get('Authorization') ?? '').replace(/^Bearer\s+/, '');
       if (!this.env.PING_TOKEN || token !== this.env.PING_TOKEN) {
         return text('unauthorized', 401);
       }
       const slug = ping[1];
+      // DELETE prunes a slug from the board (stale/test entries — the store has
+      // no row expiry).
+      if (request.method === 'DELETE') {
+        this.sql.exec('DELETE FROM hb WHERE slug = ?', slug);
+        return text('deleted');
+      }
       const status = url.searchParams.get('status') ?? 'ok';
       // Deliberately do NOT touch `alerted` here — the alarm owns the
       // down->up recovery transition, so resetting it on ping would swallow
