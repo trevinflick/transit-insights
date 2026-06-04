@@ -100,17 +100,19 @@ Do these together, then watch one deploy:
    printf 'public/data/alerts.json\npublic/data/daily-counts.json\n' >> .gitignore
    ```
    (`CHANGELOG.md` / `alerts.csv` stay tracked.)
-3. **Deploy** the frontend changes (env-aware fetch, `prebuild` fetch, new
-   `deploy.yml` triggers). The build sets `VITE_DATA_BASE_URL` so the client
-   reads R2.
+3. **Deploy** the frontend changes (R2-origin fetch, `prebuild` fetch, new
+   `deploy.yml` triggers). The client reads R2 by default — the origin is baked
+   into `src/lib/dataSource.js` (`VITE_DATA_BASE_URL` only overrides it, e.g.
+   for a staging bucket).
 4. **Server** — deploy the new `push-web-data.sh`, set `GITHUB_DISPATCH_TOKEN`,
    and confirm a run logs `uploaded to r2web:cta-alert-history-data` + `repository_dispatch
    … (http 204)`.
 
 ## Rollback
 
-The client falls back to the site-local `data/` path whenever
-`VITE_DATA_BASE_URL` is unset. To revert: redeploy the frontend without that env
-(and restore the old `push-web-data.sh` git-commit flow). The R2 objects are
-harmless to leave in place.
+The client now reads R2 as its hardcoded default (`src/lib/dataSource.js`); there
+is no longer a site-local `data/` fallback. To revert to the old git-commit flow:
+point `DATA_ORIGIN` back at the site-local `data/` path (or set
+`VITE_DATA_BASE_URL` to it), restore the old `push-web-data.sh` git-commit flow,
+and re-commit the data files. The R2 objects are harmless to leave in place.
 ```
