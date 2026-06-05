@@ -37,6 +37,10 @@ const ALERTS_URL = process.env.DATA_ORIGIN_URL || 'https://data.chicagotransital
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PAD_MS = 5 * 60 * 1000; // pad the window so a train is on screen before/after the cold
+// Clip very long incidents: planned multi-day reroutes surface as one days-long
+// "incident" and would produce multi-MB tracks. The formation + first hours are
+// the watchable part anyway, so cap the archived window here.
+const MAX_WINDOW_MS = 4 * 60 * 60 * 1000;
 // Observations roll off at 7 days; stay inside that so we never archive a
 // window whose positions are already (partly) gone.
 const RETENTION_MS = (argv['window-days'] ? Number(argv['window-days']) : 6.5) * DAY_MS;
@@ -144,7 +148,8 @@ async function main() {
     }
 
     const qstart = picked.onset - PAD_MS;
-    const qend = picked.resolved != null ? picked.resolved + PAD_MS : now;
+    let qend = picked.resolved != null ? picked.resolved + PAD_MS : now;
+    if (qend - qstart > MAX_WINDOW_MS) qend = qstart + MAX_WINDOW_MS;
     const rows = posQuery.all(picked.lineShort, qstart, qend);
     if (rows.length === 0) {
       skippedEmpty++;
