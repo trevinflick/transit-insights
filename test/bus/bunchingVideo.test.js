@@ -1,85 +1,64 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { fillInteriorGaps, attachTrails } = require('../../src/bus/bunchingVideo');
+const { attachTrails } = require('../../src/bus/bunchingVideo');
+const { buildVehicleSeries, vehicleStateAt } = require('../../src/shared/videoTracks');
 
-// Cartesian mode (hasPolyline: false) keeps the math simple: positions
-// interpolate linearly in lat/lon by timestamp fraction.
-const GEOM = { linePts: [], lineCum: [], hasPolyline: false };
+// Interior-gap bridging now lives in the shared dropout kernel (the bus video
+// feeds it bus-shaped snapshots: `.vehicles` arrays keyed by `vid`). These cases
+// preserve the route 3 #8940 dropout regression — a bus the feed drops mid-clip
+// must glide through the gap, not freeze or vanish. Cartesian mode (no polyline)
+// keeps the math a straight lat/lon lerp by timestamp fraction.
+const BUS = { itemsOf: (s) => s.vehicles, idOf: (v) => v.vid };
+const SEC = 1000;
 
 function snap(ts, vehicles) {
   return { ts, vehicles };
 }
 
-test('fillInteriorGaps: single missed poll is interpolated, not frozen', () => {
-  const snapshots = [
-    snap(0, [{ vid: 'A', lat: 0, lon: 0, heading: 90, pdist: 100 }]),
-    snap(15, []), // A dropped this tick
-    snap(30, [{ vid: 'A', lat: 0, lon: 2, heading: 90, pdist: 300 }]),
-  ];
-  const filled = fillInteriorGaps(snapshots, GEOM);
-  assert.equal(filled, 1);
-  const mid = snapshots[1].vehicles.find((v) => v.vid === 'A');
-  assert.ok(mid, 'A synthesized into the gap snapshot');
+test('kernel bridges a bus dropped for a single poll mid-clip (not frozen)', () => {
+  const series = buildVehicleSeries(
+    [
+      snap(0, [{ vid: 'A', lat: 0, lon: 0, heading: 90, pdist: 100 }]),
+      snap(15 * SEC, []), // A dropped this tick
+      snap(30 * SEC, [{ vid: 'A', lat: 0, lon: 2, heading: 90, pdist: 300 }]),
+    ],
+    BUS,
+  ).get('A');
+  const mid = vehicleStateAt(series, 15 * SEC);
+  assert.ok(mid, 'A is bridged across the gap snapshot, not absent');
   assert.equal(mid.lon, 1, 'lon interpolated to the midpoint by ts fraction');
-  assert.equal(mid.filled, true);
+  assert.equal(mid.heading, 90, 'carries payload across the bridge');
 });
 
-test('fillInteriorGaps: multi-poll gap is fully filled so the bus never vanishes', () => {
-  // Models the route 3 #8940 dropout: present, gone for several ticks, back.
-  const snapshots = [
-    snap(0, [{ vid: 'A', lat: 0, lon: 0, heading: 0, pdist: 0 }]),
-    snap(15, []),
-    snap(30, []),
-    snap(45, []),
-    snap(60, [{ vid: 'A', lat: 0, lon: 4, heading: 0, pdist: 0 }]),
-  ];
-  const filled = fillInteriorGaps(snapshots, GEOM);
-  assert.equal(filled, 3);
+test('kernel bridges a multi-poll bus dropout so the bus never vanishes', () => {
+  // route 3 #8940: present, gone for several ticks, back.
+  const series = buildVehicleSeries(
+    [
+      snap(0, [{ vid: 'A', lat: 0, lon: 0 }]),
+      snap(15 * SEC, []),
+      snap(30 * SEC, []),
+      snap(45 * SEC, []),
+      snap(60 * SEC, [{ vid: 'A', lat: 0, lon: 4 }]),
+    ],
+    BUS,
+  ).get('A');
+  // The whole 60 s gap is < 8 min, so every interior frame is bridged.
   for (let i = 1; i <= 3; i++) {
-    const v = snapshots[i].vehicles.find((x) => x.vid === 'A');
-    assert.ok(v, `A present in interior snapshot ${i}`);
-    assert.equal(v.lon, i, `lon glides across the gap at snapshot ${i}`);
+    const v = vehicleStateAt(series, i * 15 * SEC);
+    assert.ok(v, `A present mid-gap at ${i * 15}s`);
+    assert.ok(Math.abs(v.lon - i) < 1e-9, `lon glides across the gap at ${i * 15}s`);
   }
 });
 
-test('fillInteriorGaps: trailing gap is left for tail-drop ghost handling', () => {
-  const snapshots = [
-    snap(0, [{ vid: 'A', lat: 0, lon: 0 }]),
-    snap(15, [{ vid: 'A', lat: 0, lon: 1 }]),
-    snap(30, []), // A drops and never returns — tail drop, not interior
-  ];
-  const filled = fillInteriorGaps(snapshots, GEOM);
-  assert.equal(filled, 0);
-  assert.equal(snapshots[2].vehicles.length, 0);
-});
-
-test('fillInteriorGaps: leading absence (before first sighting) is not backfilled', () => {
-  const snapshots = [
-    snap(0, []), // A not yet seen
-    snap(15, [{ vid: 'A', lat: 0, lon: 1 }]),
-    snap(30, [{ vid: 'A', lat: 0, lon: 2 }]),
-  ];
-  const filled = fillInteriorGaps(snapshots, GEOM);
-  assert.equal(filled, 0);
-  assert.equal(snapshots[0].vehicles.length, 0);
-});
-
-test('fillInteriorGaps: independent gaps across multiple vehicles', () => {
-  const snapshots = [
-    snap(0, [
-      { vid: 'A', lat: 0, lon: 0 },
-      { vid: 'B', lat: 1, lon: 0 },
-    ]),
-    snap(15, [{ vid: 'B', lat: 1, lon: 1 }]), // A gone
-    snap(30, [
-      { vid: 'A', lat: 0, lon: 2 },
-      { vid: 'B', lat: 1, lon: 2 },
-    ]),
-  ];
-  const filled = fillInteriorGaps(snapshots, GEOM);
-  assert.equal(filled, 1, 'only A had an interior gap');
-  const a = snapshots[1].vehicles.find((v) => v.vid === 'A');
-  assert.ok(a && a.lon === 1);
+test('kernel does not draw a bus before its first sighting', () => {
+  const series = buildVehicleSeries(
+    [
+      snap(0, []), // A not yet seen
+      snap(15 * SEC, [{ vid: 'A', lat: 0, lon: 1 }]),
+    ],
+    BUS,
+  ).get('A');
+  assert.equal(vehicleStateAt(series, 0), null, 'leading absence is not backfilled');
 });
 
 test('attachTrails: builds oldest->newest trail spanning the window', () => {

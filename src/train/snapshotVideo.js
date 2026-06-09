@@ -13,6 +13,7 @@ const {
 } = require('../map');
 const { buildLineBranches, snapToLineWithPerp, pointAlongLine } = require('./speedmap');
 const { smoothSeries, median } = require('../shared/stats');
+const { buildVehicleSeries, vehicleStateAt } = require('../shared/videoTracks');
 
 // Off-polyline rejection: trains whose median perp-distance to every branch
 // exceeds this fall back to raw lat/lon (no snap, no monotonicity clamp).
@@ -40,7 +41,9 @@ async function captureSnapshotVideo(initialTrains, lineColors, trainLines, opts 
   for (let i = 1; i < ticks; i++) {
     await sleep(tickMs);
     try {
-      const trains = await getAllTrainPositions();
+      // includeApprox: keep trains the feed briefly drops to 0,0 (recovered
+      // from their next-station) on screen instead of letting them pop out.
+      const trains = await getAllTrainPositions(undefined, { includeApprox: true });
       snapshots.push({ ts: Date.now(), trains });
     } catch (e) {
       console.warn(`snapshot video tick ${i}: fetch failed — ${e.message}`);
@@ -136,8 +139,9 @@ async function captureSnapshotVideo(initialTrains, lineColors, trainLines, opts 
       const snapped = pointAlongLine(bestBranch.points, bestBranch.cumDist, entry.track);
       if (snapped) {
         // Mutate a copy so the underlying snapshot is unchanged for callers
-        // that might inspect it after.
-        const next = { ...entry.t, lat: snapped.lat, lon: snapped.lon };
+        // that might inspect it after. Carry `track` so the dropout kernel can
+        // bridge/dead-reckon along the polyline.
+        const next = { ...entry.t, lat: snapped.lat, lon: snapped.lon, track: entry.track };
         entry.t = next;
         snapshots[entry.snapIdx].trains = snapshots[entry.snapIdx].trains.map((tr) =>
           tr.rn === next.rn ? next : tr,
@@ -146,55 +150,44 @@ async function captureSnapshotVideo(initialTrains, lineColors, trainLines, opts 
     }
   }
 
-  // Interpolate between adjacent snapshots. When both endpoints share a
-  // branch+track, walk the polyline so curves render correctly; otherwise
-  // fall back to cartesian lerp (off-polyline trains, or trains whose snap
-  // failed the perp threshold).
-  const trackByRnAtSnap = new Map();
+  // Frame assembly via the shared dropout kernel: bridge short feed gaps,
+  // ghost long ones, and dead-reckon+fade trains the feed drops — so a train
+  // never blinks out and pops back in mid-timelapse (this video previously had
+  // no ghosting at all). `pointAlong` is per-rn because each train is snapped to
+  // its own best branch. Tail drops fade fully over a fixed window (vs the
+  // bunching clip's linger) so dozens of end-of-service trains don't clutter the
+  // system-wide view.
+  const SNAPSHOT_TAIL_FADE_MS = 90_000;
+  const branchByRn = new Map();
   for (const [rn, series] of seriesByRn) {
-    const m = new Map();
-    for (const e of series) {
-      if (e.track != null && e.branch) m.set(e.snapIdx, { track: e.track, branch: e.branch });
-    }
-    trackByRnAtSnap.set(rn, m);
+    branchByRn.set(rn, series.find((e) => e.branch)?.branch ?? null);
   }
+  const kSeries = buildVehicleSeries(snapshots, { trackOf: (t) => t.track ?? null });
+  const videoEndTs = snapshots[snapshots.length - 1].ts;
 
   const trainFrames = [];
-  for (let i = 0; i < snapshots.length - 1; i++) {
-    const a = new Map(snapshots[i].trains.map((t) => [t.rn, t]));
-    const b = new Map(snapshots[i + 1].trains.map((t) => [t.rn, t]));
-    const allRns = new Set([...a.keys(), ...b.keys()]);
-    for (let k = 0; k < interpolate; k++) {
-      const t = k / interpolate;
-      const frame = [];
-      for (const rn of allRns) {
-        const ta = a.get(rn);
-        const tb = b.get(rn);
-        const from = ta || tb;
-        const to = tb || ta;
-        const tracks = trackByRnAtSnap.get(rn);
-        const trackA = tracks?.get(i);
-        const trackB = tracks?.get(i + 1);
-        let lat;
-        let lon;
-        if (trackA && trackB && trackA.branch === trackB.branch) {
-          const trackHere = trackA.track + (trackB.track - trackA.track) * t;
-          const p = pointAlongLine(trackA.branch.points, trackA.branch.cumDist, trackHere);
-          if (p) {
-            lat = p.lat;
-            lon = p.lon;
-          }
-        }
-        if (lat == null) {
-          lat = from.lat + (to.lat - from.lat) * t;
-          lon = from.lon + (to.lon - from.lon) * t;
-        }
-        frame.push({ rn, line: from.line, lat, lon });
-      }
-      trainFrames.push(frame);
+  const pushFrame = (frameTs) => {
+    const frame = [];
+    for (const [rn, series] of kSeries) {
+      const branch = branchByRn.get(rn);
+      const pointAlong = branch
+        ? (track) => pointAlongLine(branch.points, branch.cumDist, track)
+        : null;
+      const st = vehicleStateAt(series, frameTs, {
+        pointAlong,
+        realTerminalEnds: [],
+        videoEndTs,
+        tailFadeMs: SNAPSHOT_TAIL_FADE_MS,
+      });
+      if (st) frame.push(st);
     }
+    trainFrames.push(frame);
+  };
+  for (let i = 0; i < snapshots.length - 1; i++) {
+    const span = snapshots[i + 1].ts - snapshots[i].ts;
+    for (let k = 0; k < interpolate; k++) pushFrame(snapshots[i].ts + (span * k) / interpolate);
   }
-  trainFrames.push(snapshots[snapshots.length - 1].trains);
+  pushFrame(videoEndTs);
 
   const tmpDir = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'cta-train-snapshot-video-'));
   try {

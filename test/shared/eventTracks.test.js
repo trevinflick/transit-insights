@@ -4,6 +4,7 @@ const {
   pickReplayableIncident,
   resolveAffectedDir,
   buildTrack,
+  segmentByDirection,
 } = require('../../src/shared/eventTracks');
 
 const NOW = 1_700_000_000_000;
@@ -115,6 +116,62 @@ test('buildTrack groups by vehicle with relative-second, rounded samples', () =>
   assert.equal(track.vehicles[0].id, '721');
   assert.deepEqual(track.vehicles[0].s[0], [0, 41.80481, -87.68161]); // t0-relative, 5dp
   assert.equal(track.vehicles[0].s[1][0], 30);
+});
+
+test('buildTrack sorts unordered rows and keys relative seconds off the earliest', () => {
+  // Rows deliberately out of ts order — buildTrack must sort before keying.
+  const rows = [
+    { ts: NOW + 30_000, vehicle_id: '9', dir: '1', lat: 41.81, lon: -87.68 },
+    { ts: NOW, vehicle_id: '9', dir: '1', lat: 41.8, lon: -87.68 },
+  ];
+  const track = buildTrack({ eventId: 'k', lineLong: 'red', onset: NOW }, rows, NOW);
+  assert.equal(track.vehicles.length, 1);
+  assert.equal(track.vehicles[0].s[0][0], 0);
+  assert.equal(track.vehicles[0].s[1][0], 30);
+  assert.equal(track.vehicles[0].s[0][1], 41.8); // earliest sample is the t0 one
+});
+
+test('buildTrack splits a turnaround (same rn, dir flip) into two legs', () => {
+  // One run number that goes out (dir 1) then reverses (dir 5) at a terminal.
+  const rows = [];
+  for (let i = 0; i < 4; i++)
+    rows.push({
+      ts: NOW + i * 30_000,
+      vehicle_id: '700',
+      dir: '1',
+      lat: 41.8 + i * 0.01,
+      lon: -87.6,
+    });
+  for (let i = 4; i < 8; i++)
+    rows.push({
+      ts: NOW + i * 30_000,
+      vehicle_id: '700',
+      dir: '5',
+      lat: 41.8 + (7 - i) * 0.01,
+      lon: -87.6,
+    });
+  const track = buildTrack({ eventId: 'k', lineLong: 'brown', onset: NOW }, rows, NOW);
+  const ids = track.vehicles.map((v) => v.id).sort();
+  assert.deepEqual(ids, ['700', '700~1']);
+  const byId = Object.fromEntries(track.vehicles.map((v) => [v.id, v]));
+  assert.equal(byId['700'].dir, '1');
+  assert.equal(byId['700~1'].dir, '5');
+  // Legs are time-disjoint: the outbound ends before the return begins.
+  assert.ok(byId['700'].s[byId['700'].s.length - 1][0] < byId['700~1'].s[0][0]);
+});
+
+test('segmentByDirection absorbs a single-ping direction blip', () => {
+  const rows = [
+    { ts: 1, dir: '1' },
+    { ts: 2, dir: '1' },
+    { ts: 3, dir: '5' }, // lone blip — not a real turnaround
+    { ts: 4, dir: '1' },
+    { ts: 5, dir: '1' },
+  ];
+  const segs = segmentByDirection(rows);
+  assert.equal(segs.length, 1, 'a 1-ping flip should not split the track');
+  assert.equal(segs[0].dir, '1');
+  assert.equal(segs[0].rows.length, 5);
 });
 
 test('buildTrack returns null when nothing is positioned', () => {

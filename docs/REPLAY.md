@@ -56,10 +56,56 @@ direction label's terminus ("toward the Loop") to the `dir` whose trains are
 **destined** there (destination text is authoritative; null = undirected, and
 the player falls back to any-direction occupancy).
 
+**Turnaround legs (`id` suffixes).** A run number (`rn`) reverses direction at a
+terminal under the *same* `rn`. Merged into one track, the player's monotonic
+de-jitter would drop the entire return leg (every "backward" sample), so the
+train appears to vanish and teleport. `buildTrack` therefore **splits a vehicle
+at a sustained direction change** (`segmentByDirection`): the outbound leg keeps
+the bare `rn` as its `id`, the return leg becomes `<rn>~1` (then `~2`…). Each leg
+is a single-direction track that fades out at the terminal and back in on the
+return — which is what actually happened. The legs are time-disjoint, so the
+"N trains on the line" readout never double-counts. A 1-ping opposite-direction
+blip (CTA `trDr` noise) is absorbed, not split.
+
 Pure builders + the replayable/affected-dir logic: `src/shared/eventTracks.js`
 (unit-tested in `test/shared/eventTracks.test.js`). The bin
 (`bin/export-event-tracks.js`) is thin wiring: load alerts.json → query
-positions → `buildTrack` → gzip → rclone.
+positions → `buildTrack` → gzip → rclone. The position query `ORDER BY ts` (and
+`buildTrack` re-sorts defensively) so segmentation and the relative-second keys
+are correct regardless of row order.
+
+## Why trains seem to vanish — and what we do about it
+
+Most "the train dropped and reappeared" moments are the CTA feed, not the
+player. Three causes and their mitigations:
+
+1. **The feed drops a train for a stretch, then resumes** (GPS loss, tunnels,
+   prediction suppression near terminals/yards). The player **bridges gaps up to
+   8 min** (`MAX_GAP_SEC`), interpolating straight through (dimmed by staleness)
+   since the train really is still running. Past 8 min it fades to a parked
+   ghost on each side and draws nothing through the unknown middle — we genuinely
+   don't know where it was.
+2. **The feed returns a train at `lat/lon = 0,0`** (unpositioned, a known CTA
+   glitch). Rather than dropping it — which manufactures a feed gap out of a
+   train that's present and locatable — `getAllTrainPositions` **recovers an
+   approximate position from the train's `nextStaNm`** (station coords) and
+   records it tagged `approx`. These recovered points flow into the track, so
+   the replay stays continuous across the dropout. They are kept **out of the
+   ghost/gap/pulse detectors** (those reads filter `approx`), so detection counts
+   are unchanged. See `recoverUnpositionedTrain` in `src/train/api.js`.
+3. **A train ends its run vs. the feed loses it mid-route.** Both used to look
+   identical (a silent fade-out). The player now tells them apart: a stream that
+   ends near a terminus (or the Loop, for round-trip lines) is a clean exit; one
+   that ends mid-route before the incident resolves gets a brief fading **"signal
+   lost" ring** at its last spot, so a data gap reads as a data gap.
+
+The server-rendered timelapses (train bunching/gap/system-snapshot and bus
+bunching) share the same model via the **`src/shared/videoTracks.js`** kernel:
+bridge short gaps, ghost long/tail drops (dead-reckoned along the polyline),
+play a turnaround glyph at real terminals. Before it, the train clips only
+ghosted trains missing from the *final* frame, so a mid-clip dropout hard-
+disappeared and popped back in; the bus clip bridged interior gaps but with no
+cap. One kernel now covers all four surfaces plus this replay.
 
 ## What gets archived
 

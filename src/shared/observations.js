@@ -49,8 +49,9 @@ function recordTrainObservations(trains, now = Date.now()) {
   if (!trains || trains.length === 0) return;
   try {
     const stmt = getDb().prepare(`
-      INSERT INTO observations (ts, kind, route, direction, vehicle_id, destination, lat, lon)
-      VALUES (?, 'train', ?, ?, ?, ?, ?, ?)
+      INSERT INTO observations
+        (ts, kind, route, direction, vehicle_id, destination, lat, lon, approx, next_station)
+      VALUES (?, 'train', ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = getDb().transaction((items) => {
       for (const t of items) {
@@ -63,6 +64,8 @@ function recordTrainObservations(trains, now = Date.now()) {
           t.destination || null,
           Number.isFinite(t.lat) ? t.lat : null,
           Number.isFinite(t.lon) ? t.lon : null,
+          t.approx ? 1 : 0,
+          t.nextStation || t.recoveredFrom || null,
         );
       }
     });
@@ -111,12 +114,18 @@ function getKnownBusPidsForRoute(route, sinceTs) {
   return rows.map((r) => r.pid);
 }
 
-function getTrainObservations(line, sinceTs) {
+// Detection reads exclude `approx` (synthesized) positions by default so ghost/
+// pulse counts are unchanged by the unpositioned-train recovery; pass
+// `includeApprox` to opt the recovered positions in. `ORDER BY ts` so callers
+// that build per-vehicle tracks (event-replay export) get monotonic samples.
+function getTrainObservations(line, sinceTs, { includeApprox = false } = {}) {
   return getDb()
     .prepare(`
     SELECT ts, direction, vehicle_id, destination, lat, lon
     FROM observations
     WHERE kind = 'train' AND route = ? AND ts >= ?
+      ${includeApprox ? '' : 'AND (approx IS NULL OR approx = 0)'}
+    ORDER BY ts
   `)
     .all(String(line), sinceTs);
 }
@@ -194,12 +203,13 @@ function countDistinctTsInBusObservations(sinceTs) {
   return row?.n || 0;
 }
 
-function getRecentTrainPositions(sinceTs) {
+function getRecentTrainPositions(sinceTs, { includeApprox = false } = {}) {
   return getDb()
     .prepare(`
     SELECT ts, route AS line, direction AS trDr, vehicle_id AS rn, destination, lat, lon
     FROM observations
     WHERE kind = 'train' AND ts >= ? AND lat IS NOT NULL AND lon IS NOT NULL
+      ${includeApprox ? '' : 'AND (approx IS NULL OR approx = 0)'}
   `)
     .all(sinceTs);
 }
@@ -233,6 +243,7 @@ function getLineCorridorBbox(line, sinceTs) {
       FROM observations
       WHERE kind = 'train' AND route = ? AND ts >= ?
         AND lat IS NOT NULL AND lon IS NOT NULL
+        AND (approx IS NULL OR approx = 0)
     `)
     .get(line, sinceTs);
   if (!row?.n) return null;

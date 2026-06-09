@@ -67,6 +67,14 @@ Brief list; deeper rationale in the linked deep-dives.
   median.
 - **Pids are stringified everywhere** (`parseVehicle`) so cache and
   fresh-API rows compare strict-equal.
+- **Recovered (`approx`) train positions are visualization-only.** A train the
+  feed returns at 0,0 is recovered from its `nextStaNm` (`recoverUnpositionedTrain`)
+  and written to `observations` tagged `approx=1`, so the replay/videos stay
+  continuous. Detection reads (`getTrainObservations`, `getRecentTrainPositions`,
+  `getLineCorridorBbox`) **filter `approx` by default** — pass `includeApprox` to
+  opt in. `getAllTrainPositions` likewise returns only real positions unless
+  called with `{ includeApprox: true }` (the live video captures do). Don't drop
+  the filter without re-validating ghost/gap/pulse counts.
 - **`recordAlertSeen` is called twice per new alert** (pre-post `postUri:null`,
   post-post with URI). The pre-post write is what `audit-alerts` uses to
   detect crashed posts — don't refactor to one call.
@@ -145,6 +153,7 @@ Four cases (pulse-first/CTA-first/pulse-only/CTA-only) detailed in
 | Train station/line data | `src/train/data/{trainStations,trainLines}.json` |
 | Audit invariants | `bin/audit-alerts.js` |
 | Event-replay track archiver | `bin/export-event-tracks.js`, `src/shared/eventTracks.js`, `docs/REPLAY.md` |
+| Video dropout/bridge/ghost model | `src/shared/videoTracks.js` (shared by bus + train bunching/gap/snapshot videos + frontend replay), `docs/REPLAY.md` |
 | Cron wrapper | `bin/cron-run.sh` |
 
 ## Operational levers (coupled or quota-related only)

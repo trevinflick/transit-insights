@@ -217,7 +217,9 @@ function db() {
       lon REAL,
       pdist REAL,
       heading INTEGER,
-      vehicle_ts INTEGER
+      vehicle_ts INTEGER,
+      approx INTEGER,
+      next_station TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_obs_kind_route_ts
       ON observations(kind, route, ts);
@@ -248,6 +250,14 @@ function db() {
     ['pdist', 'REAL'],
     ['heading', 'INTEGER'],
     ['vehicle_ts', 'INTEGER'],
+    // `approx` = 1 marks a position we *synthesized* for a train the feed
+    // returned without a usable lat/lon (the 0,0 glitch), recovered from its
+    // next-station coords. Stored so the replay/videos can keep the train
+    // visible across the dropout, but kept OUT of detection reads by default so
+    // ghost/gap/pulse counts are unchanged. `next_station` preserves the
+    // recovery source for debugging / future refinement.
+    ['approx', 'INTEGER'],
+    ['next_station', 'TEXT'],
   ]) {
     if (!obsCols.includes(name)) _db.exec(`ALTER TABLE observations ADD COLUMN ${name} ${type}`);
   }

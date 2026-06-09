@@ -133,8 +133,8 @@ async function fetchSnapshotBaseLayer(view, insetView, lineColors, trainLines) {
 function buildPinSvg(width, height, trainPixels, radius) {
   const circles = trainPixels
     .map(
-      ({ x, y, color }) =>
-        `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius}" fill="#${color}" stroke="#fff" stroke-width="2"/>`,
+      ({ x, y, color, opacity = 1 }) =>
+        `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${radius}" fill="#${color}" fill-opacity="${opacity.toFixed(2)}" stroke="#fff" stroke-width="2" stroke-opacity="${opacity.toFixed(2)}"/>`,
     )
     .join('');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${circles}</svg>`;
@@ -153,7 +153,9 @@ function projectTrains(trains, view, lineColors) {
       view.height,
     );
     if (x < -10 || x > view.width + 10 || y < -10 || y > view.height + 10) continue;
-    out.push({ x, y, color: lineColors[t.line] || 'ffffff' });
+    // `opacity` (default 1) lets the dropout kernel ease trains in/out and dim
+    // bridged/ghosted positions instead of popping them on/off.
+    out.push({ x, y, color: lineColors[t.line] || 'ffffff', opacity: t.opacity ?? 1 });
   }
   return out;
 }

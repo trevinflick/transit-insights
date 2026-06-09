@@ -17,6 +17,7 @@ const TURNAROUND_NEAR_TERMINAL_FT = 1320; // ~0.25 mi
 const TURNAROUND_GLIDE_FRAMES = 2;
 const { smoothSeries } = require('../shared/stats');
 const { snapToLine, pointAlongLine } = require('../train/speedmap');
+const { buildVehicleSeries, vehicleStateAt } = require('../shared/videoTracks');
 
 const execP = promisify(exec);
 
@@ -31,65 +32,6 @@ const DEFAULT_FRAMERATE = 16; // ~4s clip at 16× speed
 // the marker vanish mid-frame.
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Fill interior gaps where CTA dropped a vehicle for one or more polls mid-clip
-// and then resumed reporting. Without this the marker freezes then jumps (a
-// single missed poll) or vanishes entirely and pops back in (multi-poll gap)
-// — see the route 3 #8940 ~2 min dropout. Synthesizes the missing snapshots by
-// interpolating along the polyline (or straight line when no polyline) between
-// the bracketing sightings so the bus glides through the gap. Only interior
-// gaps are filled; a trailing gap stays a tail drop, rendered as a fading ghost
-// below. Mutates `snapshots` in place; returns the number of frames filled.
-function fillInteriorGaps(snapshots, { linePts, lineCum, hasPolyline }) {
-  const idxByVid = new Map(); // vid → ascending [snapshotIdx] where present
-  for (let s = 0; s < snapshots.length; s++) {
-    for (const v of snapshots[s].vehicles) {
-      if (!idxByVid.has(v.vid)) idxByVid.set(v.vid, []);
-      idxByVid.get(v.vid).push(s);
-    }
-  }
-  let filled = 0;
-  for (const [vid, idxs] of idxByVid) {
-    for (let p = 0; p + 1 < idxs.length; p++) {
-      const ia = idxs[p];
-      const ib = idxs[p + 1];
-      if (ib === ia + 1) continue; // adjacent — no gap
-      const va = snapshots[ia].vehicles.find((v) => v.vid === vid);
-      const vb = snapshots[ib].vehicles.find((v) => v.vid === vid);
-      const tA = snapshots[ia].ts;
-      const tB = snapshots[ib].ts;
-      for (let m = ia + 1; m < ib; m++) {
-        const f = tB > tA ? (snapshots[m].ts - tA) / (tB - tA) : (m - ia) / (ib - ia);
-        let lat;
-        let lon;
-        let track;
-        if (hasPolyline && va.track != null && vb.track != null) {
-          track = va.track + (vb.track - va.track) * f;
-          const pt = pointAlongLine(linePts, lineCum, track);
-          if (pt) {
-            lat = pt.lat;
-            lon = pt.lon;
-          }
-        }
-        if (lat == null) {
-          lat = va.lat + (vb.lat - va.lat) * f;
-          lon = va.lon + (vb.lon - va.lon) * f;
-        }
-        snapshots[m].vehicles.push({
-          vid,
-          lat,
-          lon,
-          track,
-          heading: va.heading,
-          pdist: va.pdist,
-          filled: true,
-        });
-        filled++;
-      }
-    }
-  }
-  return filled;
-}
 
 async function captureBunchingVideo(bunch, pattern, opts = {}) {
   const tickMs = opts.tickMs || DEFAULT_TICK_MS;
@@ -218,204 +160,91 @@ async function renderBunchingClip(snapshots, bunch, pattern, opts = {}) {
     }
   }
 
-  fillInteriorGaps(snapshots, { linePts, lineCum, hasPolyline });
-
   const extraVehicles = snapshots.slice(1).flatMap((s) => s.vehicles);
   const view = computeBunchingView(bunch, pattern, extraVehicles);
   const baseMap = await fetchBunchingBaseMap(view);
 
-  // Stable vid-sort across frames: API can return vehicles in different
-  // orders each tick, which flips the perpendicular nudge in separateMarkers.
-  const vehicleFrames = [];
-  const frameTimes = []; // parallel to vehicleFrames: real ts of each frame
-  const allVids = [...new Set(snapshots.flatMap((s) => s.vehicles.map((v) => v.vid)))].sort();
-
-  // Tail drops: VIDs missing from the final snapshot that the API stopped
-  // reporting before the clip ended. Without special handling these vanish
-  // abruptly. We dead-reckon them along the polyline at last-known speed
-  // and fade opacity from full to a 0.15 floor across the rest of the clip.
+  // Frame assembly via the shared dropout kernel (`src/shared/videoTracks.js`,
+  // the same model the train videos + frontend replay use): bridge short feed
+  // gaps (≤ 8 min, dimmed), ghost long/un-bridgeable ones, dead-reckon tail
+  // drops, and play a turnaround glyph at a terminal. This replaces the old
+  // uncapped fillInteriorGaps + bespoke tail-ghost loop.
   const lastSnapIdx = snapshots.length - 1;
+  const videoEndTs = snapshots[lastSnapIdx].ts;
+  const pointAlong = hasPolyline ? (track) => pointAlongLine(linePts, lineCum, track) : null;
+  const kSeries = buildVehicleSeries(snapshots, {
+    itemsOf: (s) => s.vehicles,
+    idOf: (v) => v.vid,
+    trackOf: (v) => v.track ?? null,
+  });
+
+  // Per-vid turnaround terminus for tail drops. Bus polylines are end-to-end
+  // (no Loop round-trip), so both endpoints are real terminals. A vid that
+  // reappeared under a different pid has *provably* turned around (CTA reassigns
+  // the trip before the bus crawls the final layover), so force the nearer end
+  // regardless of proximity; otherwise fall back to the proximity test.
   const finalByVid = new Map(snapshots[lastSnapIdx].vehicles.map((v) => [v.vid, v]));
-  const tailDrops = new Map();
-  for (const vid of allVids) {
-    if (finalByVid.has(vid)) continue;
-    let lsi = -1;
-    let lsv = null;
-    for (let i = lastSnapIdx - 1; i >= 0; i--) {
-      const v = snapshots[i].vehicles.find((x) => x.vid === vid);
-      if (v) {
-        lsi = i;
-        lsv = v;
-        break;
-      }
-    }
-    if (lsi < 0) continue;
-    let speedFtPerSec = 0;
-    if (lsi > 0 && hasPolyline && lsv.track != null) {
-      const prev = snapshots[lsi - 1].vehicles.find((x) => x.vid === vid);
-      const dt = (snapshots[lsi].ts - snapshots[lsi - 1].ts) / 1000;
-      if (prev && prev.track != null && dt > 0) {
-        speedFtPerSec = (lsv.track - prev.track) / dt;
-      }
-    }
-    // Terminal-arrival classifier: bus polylines are end-to-end (no Loop
-    // round-trip), so both endpoints are real terminals.
-    let turnaroundEnd = null;
-    if (hasPolyline) {
-      const ends = [
+  const ends = hasPolyline
+    ? [
         { lat: pattern.points[0].lat, lon: pattern.points[0].lon },
         {
           lat: pattern.points[pattern.points.length - 1].lat,
           lon: pattern.points[pattern.points.length - 1].lon,
         },
-      ];
+      ]
+    : [];
+  const turnaroundEndByVid = new Map();
+  if (hasPolyline) {
+    for (const [vid, series] of kSeries) {
+      if (finalByVid.has(vid)) continue; // present at the end → not a tail drop
+      const last = series[series.length - 1];
       let bestEnd = null;
       let bestD = Number.POSITIVE_INFINITY;
       for (const end of ends) {
-        const d = haversineFt({ lat: lsv.lat, lon: lsv.lon }, end);
+        const d = haversineFt({ lat: last.lat, lon: last.lon }, end);
         if (d < bestD) {
           bestD = d;
           bestEnd = end;
         }
       }
-      // A vid that reappeared under a different pid has provably turned around
-      // at a terminal — classify it as a turnaround regardless of how far short
-      // of the end vertex it stopped reporting on this pattern (CTA reassigns
-      // the trip before the bus crawls the final layover stretch). Otherwise
-      // fall back to the proximity test against the nearer endpoint.
       if (turnedAround.has(vid) || bestD <= TURNAROUND_NEAR_TERMINAL_FT) {
-        turnaroundEnd = bestEnd;
+        turnaroundEndByVid.set(vid, bestEnd);
       }
     }
-    tailDrops.set(vid, {
-      lastSeenIdx: lsi,
-      lastSeenTs: snapshots[lsi].ts,
-      lastV: lsv,
-      speedFtPerSec,
-      turnaroundEnd,
-    });
   }
 
-  // Keep ghosts visible until the end of the clip, fading slowly across the
-  // whole remainder. Dead-reckon position at last-known speed for the whole
-  // clip too — pointAlongLine clamps at the polyline endpoints if the
-  // extrapolation runs past the terminal, so a ghost just parks at the end
-  // of the line rather than disappearing or jumping.
-  const videoEndTs = snapshots[lastSnapIdx].ts;
+  // Bus turnaround glide is frames-based (a fixed-ms window compresses to ~1
+  // frame at playback speed) and parks the U-turn glyph rather than fading it.
   const turnaroundGlideMs = TURNAROUND_GLIDE_FRAMES * (tickMs / interpolate);
-  function ghostsAt(frameTs) {
-    const out = [];
-    for (const [vid, drop] of tailDrops) {
-      const ageMs = frameTs - drop.lastSeenTs;
-      // Render at the exact transition frame (ageMs == 0) so the ghost
-      // takes over without a one-frame gap; the bus is already excluded
-      // from normal rendering starting at this snapshot.
-      if (ageMs < 0) continue;
-      if (drop.turnaroundEnd) {
-        // Glide-then-park: lerp from last-seen position to the terminus so the
-        // marker arrives gracefully, then hold the U-turn glyph parked at the
-        // terminus for the rest of the clip. No fade-out — the bus has reached
-        // the end and reversed, and that final state should stay readable.
-        if (ageMs < turnaroundGlideMs) {
-          const t = ageMs / turnaroundGlideMs;
-          out.push({
-            vid,
-            lat: drop.lastV.lat + (drop.turnaroundEnd.lat - drop.lastV.lat) * t,
-            lon: drop.lastV.lon + (drop.turnaroundEnd.lon - drop.lastV.lon) * t,
-            heading: drop.lastV.heading,
-            pdist: drop.lastV.pdist,
-          });
-          continue;
-        }
-        out.push({
-          vid,
-          lat: drop.turnaroundEnd.lat,
-          lon: drop.turnaroundEnd.lon,
-          heading: drop.lastV.heading,
-          pdist: drop.lastV.pdist,
-          turnaround: true,
-        });
-        continue;
-      }
-      const fadeMs = Math.max(1, videoEndTs - drop.lastSeenTs);
-      let lat = drop.lastV.lat;
-      let lon = drop.lastV.lon;
-      if (hasPolyline && drop.lastV.track != null) {
-        const newTrack = drop.lastV.track + drop.speedFtPerSec * (ageMs / 1000);
-        const p = pointAlongLine(linePts, lineCum, newTrack);
-        if (p) {
-          lat = p.lat;
-          lon = p.lon;
-        }
-      }
-      const opacity = Math.max(0.15, 1 - ageMs / fadeMs);
-      out.push({
-        vid,
-        lat,
-        lon,
-        heading: drop.lastV.heading,
-        pdist: drop.lastV.pdist,
-        ghost: true,
-        opacity,
+  const vehicleFrames = [];
+  const frameTimes = []; // parallel to vehicleFrames: real ts of each frame
+  let anyGhost = false;
+
+  const pushFrame = (frameTs) => {
+    const vehicles = [];
+    // kSeries iteration order is stable across frames (same Map), so
+    // separateMarkers gets consistent input order each tick.
+    for (const [vid, series] of kSeries) {
+      const st = vehicleStateAt(series, frameTs, {
+        pointAlong,
+        turnaroundEnd: turnaroundEndByVid.get(vid) ?? null,
+        turnaroundPark: true,
+        turnaroundGlideMs,
+        videoEndTs,
       });
+      if (!st) continue;
+      if (st.ghost) anyGhost = true;
+      vehicles.push(st);
     }
-    return out;
-  }
+    vehicleFrames.push(vehicles);
+    frameTimes.push(frameTs);
+  };
 
   for (let i = 0; i < snapshots.length - 1; i++) {
-    const a = new Map(snapshots[i].vehicles.map((v) => [v.vid, v]));
-    const b = new Map(snapshots[i + 1].vehicles.map((v) => [v.vid, v]));
-    // Tail-dropped VIDs render normally up to their last-seen snapshot, then
-    // hand off to the fading ghost from that timestamp onward — so the bus
-    // appears as usual, then turns gray and fades when the signal is lost.
-    const vids = allVids.filter((vid) => {
-      const drop = tailDrops.get(vid);
-      if (drop && i >= drop.lastSeenIdx) return false;
-      return a.has(vid) || b.has(vid);
-    });
-    for (let k = 0; k < interpolate; k++) {
-      const t = k / interpolate;
-      const vehicles = [];
-      for (const vid of vids) {
-        const va = a.get(vid);
-        const vb = b.get(vid);
-        const from = va || vb;
-        const to = vb || va;
-        // Polyline interp when both endpoints are snapped; Cartesian fallback
-        // (straight-line lerp would cut across turns).
-        let lat, lon;
-        if (hasPolyline && from.track != null && to.track != null) {
-          const track = from.track + (to.track - from.track) * t;
-          const p = pointAlongLine(linePts, lineCum, track);
-          if (p) {
-            lat = p.lat;
-            lon = p.lon;
-          }
-        }
-        if (lat == null) {
-          lat = from.lat + (to.lat - from.lat) * t;
-          lon = from.lon + (to.lon - from.lon) * t;
-        }
-        vehicles.push({
-          vid,
-          lat,
-          lon,
-          heading: from.heading,
-          pdist: from.pdist,
-        });
-      }
-      const frameTs = snapshots[i].ts + (snapshots[i + 1].ts - snapshots[i].ts) * t;
-      vehicles.push(...ghostsAt(frameTs));
-      vehicleFrames.push(vehicles);
-      frameTimes.push(frameTs);
-    }
+    const span = snapshots[i + 1].ts - snapshots[i].ts;
+    for (let k = 0; k < interpolate; k++) pushFrame(snapshots[i].ts + (span * k) / interpolate);
   }
-  // Final real snapshot → last frame, in the same stable vid order, plus any
-  // ghosts still inside their fade window at the final timestamp.
-  const finalFrame = allVids.filter((vid) => finalByVid.has(vid)).map((vid) => finalByVid.get(vid));
-  finalFrame.push(...ghostsAt(snapshots[lastSnapIdx].ts));
-  vehicleFrames.push(finalFrame);
-  frameTimes.push(videoEndTs);
+  pushFrame(videoEndTs);
 
   // Comet trails: recent path behind each moving bus (~TRAIL_MS of real time).
   const trailFrames = Math.max(2, Math.round(TRAIL_MS / (tickMs / interpolate)));
@@ -430,7 +259,7 @@ async function renderBunchingClip(snapshots, bunch, pattern, opts = {}) {
       const buf = await renderBunchingFrame(view, baseMap, vehicleFrames[i], signals, stops, {
         compactStops: true,
         compactSignals: true,
-        showGhostLegend: [...tailDrops.values()].some((d) => !d.turnaroundEnd),
+        showGhostLegend: anyGhost,
         labels,
         clock: { elapsedSec: (frameTimes[i] - clipStartTs) / 1000, totalSec },
       });
@@ -478,7 +307,7 @@ async function renderBunchingClip(snapshots, bunch, pattern, opts = {}) {
       elapsedSec,
       initialSpanFt,
       finalSpanFt,
-      hadGhosts: tailDrops.size > 0,
+      hadGhosts: anyGhost,
     };
   } finally {
     await Fs.remove(tmpDir).catch(() => {});
@@ -488,6 +317,5 @@ async function renderBunchingClip(snapshots, bunch, pattern, opts = {}) {
 module.exports = {
   captureBunchingVideo,
   renderBunchingClip,
-  fillInteriorGaps,
   attachTrails,
 };

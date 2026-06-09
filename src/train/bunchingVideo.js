@@ -14,24 +14,7 @@ const {
 const { haversineFt } = require('../shared/geo');
 const { smoothSeries } = require('../shared/stats');
 const { buildLinePolyline, snapToLine, pointAlongLine, inLoopTrunk } = require('./speedmap');
-
-const TURNAROUND_NEAR_TERMINAL_FT = 1320; // ~0.25 mi
-const TURNAROUND_GLIDE_MS = 2_500;
-const TURNAROUND_HOLD_MS = 3_000;
-const TURNAROUND_FADE_MS = 2_000;
-
-// Real-terminal endpoints for a polyline: both endpoints, minus any that lie
-// inside the Loop trunk. For round-trip lines (Brown/Orange/Pink/Purple)
-// buildLinePolyline truncates to one direction so the inner end is the Loop
-// apex, not a terminus — disappearances there are normal mid-circuit
-// turnaround behavior, not "arrived at endpoint of run."
-function realTerminalEnds(linePts) {
-  if (!linePts || linePts.length < 2) return [];
-  const toLatLon = (pt) =>
-    Array.isArray(pt) ? { lat: pt[0], lon: pt[1] } : { lat: pt.lat, lon: pt.lon };
-  const ends = [toLatLon(linePts[0]), toLatLon(linePts[linePts.length - 1])];
-  return ends.filter(({ lat, lon }) => !inLoopTrunk(lat, lon));
-}
+const { buildVehicleSeries, vehicleStateAt, realTerminalEnds } = require('../shared/videoTracks');
 
 const execP = promisify(exec);
 
@@ -39,11 +22,9 @@ const DEFAULT_TICK_MS = 15_000;
 const DEFAULT_TICKS = 40; // 10 min of real time
 const DEFAULT_INTERPOLATE = 4;
 const DEFAULT_FRAMERATE = 16;
-// CTA's train tracker can briefly drop a train (GPS loss, prediction
-// suppression near terminals/yards). For tail drops (train never reappears)
-// we render a fading gray ghost dead-reckoned along the polyline at
-// last-known speed for the rest of the clip rather than letting the marker
-// vanish mid-frame.
+// Dropout handling (bridge short gaps, ghost long/tail drops, terminal
+// turnarounds) lives in the shared `videoTracks` kernel so the snapshot video
+// and the frontend replay behave identically.
 
 // CTA occasionally returns a single-tick GPS teleport (~0.5–1 mi off-route
 // and back). At ~15 s tick spacing, anything past this caps real train motion
@@ -133,7 +114,7 @@ async function captureTrainBunchingVideo(bunch, lineColors, trainLines, stations
     await sleep(tickMs);
     let trains = [];
     try {
-      const all = await getAllTrainPositions([bunch.line]);
+      const all = await getAllTrainPositions([bunch.line], { includeApprox: true });
       trains = all.filter((t) => t.line === bunch.line && bunchRns.has(t.rn));
     } catch (e) {
       console.warn(`train video capture tick ${i}: fetch failed — ${e.message}`);
@@ -207,199 +188,40 @@ async function renderTrainBunchingClip(
   // Stable identity for every bunched train, shared across all frames.
   const labels = assignTrainNumbers(bunch.trains);
 
-  // Stable rn-sort across frames so `separateMarkers` gets consistent input
-  // order — otherwise the perpendicular nudge flips for overlapped trains.
+  // Frame assembly via the shared dropout kernel: bridge short feed gaps, fade
+  // a ghost across long/un-bridgeable gaps, dead-reckon tail drops, and play a
+  // turnaround glyph at real terminals — so a train the feed briefly drops mid-
+  // clip never hard-disappears and pops back in (the old loop only handled
+  // trains missing from the *final* snapshot).
   const trainFrames = [];
   const frameTimes = []; // parallel to trainFrames: real ts of each frame
-  const allRns = [...new Set(snapshots.flatMap((s) => s.trains.map((t) => t.rn)))].sort();
+  const videoEndTs = snapshots[snapshots.length - 1].ts;
+  const pointAlong = hasPolyline ? (track) => pointAlongLine(linePts, lineCum, track) : null;
+  const ends = hasPolyline ? realTerminalEnds(linePts, inLoopTrunk) : [];
+  const seriesByRn = buildVehicleSeries(snapshots, { trackOf: (t) => t.track ?? null });
+  let anyGhost = false;
 
-  // Tail drops: RNs missing from the final snapshot. Render as fading ghosts
-  // (dead-reckoned along the polyline) instead of an abrupt disappearance.
-  const lastSnapIdx = snapshots.length - 1;
-  const finalByRn = new Map(snapshots[lastSnapIdx].trains.map((t) => [t.rn, t]));
-  const tailDrops = new Map();
-  for (const rn of allRns) {
-    if (finalByRn.has(rn)) continue;
-    let lsi = -1;
-    let lst = null;
-    for (let i = lastSnapIdx - 1; i >= 0; i--) {
-      const t = snapshots[i].trains.find((x) => x.rn === rn);
-      if (t) {
-        lsi = i;
-        lst = t;
-        break;
-      }
-    }
-    if (lsi < 0) continue;
-    let speedFtPerSec = 0;
-    if (lsi > 0 && hasPolyline && lst.track != null) {
-      const prev = snapshots[lsi - 1].trains.find((x) => x.rn === rn);
-      const dt = (snapshots[lsi].ts - snapshots[lsi - 1].ts) / 1000;
-      if (prev && prev.track != null && dt > 0) {
-        speedFtPerSec = (lst.track - prev.track) / dt;
-      }
-    }
-    // Classify the drop: if the last-seen position was within the
-    // turnaround radius of a real terminal endpoint, treat it as "arrived
-    // at terminus" rather than "lost signal mid-line." Loop apex endpoints
-    // are filtered out by realTerminalEnds — disappearances there stay on
-    // the gray-ghost path.
-    let turnaroundEnd = null;
-    if (hasPolyline) {
-      for (const end of realTerminalEnds(linePts)) {
-        const d = haversineFt({ lat: lst.lat, lon: lst.lon }, end);
-        if (d <= TURNAROUND_NEAR_TERMINAL_FT) {
-          turnaroundEnd = end;
-          break;
-        }
-      }
-    }
-    tailDrops.set(rn, {
-      lastSeenIdx: lsi,
-      lastSeenTs: snapshots[lsi].ts,
-      lastT: lst,
-      speedFtPerSec,
-      turnaroundEnd,
-    });
-  }
-
-  // Keep ghosts visible until the end of the clip, fading slowly across the
-  // whole remainder. Dead-reckon position at last-known speed for the whole
-  // clip too — pointAlongLine clamps at the polyline endpoints if the
-  // extrapolation runs past the terminal, so a ghost just parks at the end
-  // of the line rather than disappearing or jumping.
-  const videoEndTs = snapshots[lastSnapIdx].ts;
-  function ghostsAt(frameTs) {
-    const out = [];
-    for (const [rn, drop] of tailDrops) {
-      const ageMs = frameTs - drop.lastSeenTs;
-      // Render at the exact transition frame (ageMs == 0) so the ghost
-      // takes over without a one-frame gap; the train is already excluded
-      // from normal rendering starting at this snapshot.
-      if (ageMs < 0) continue;
-      if (drop.turnaroundEnd) {
-        // Three-phase lifecycle so the marker reaches the terminal
-        // gracefully instead of teleporting:
-        //   [0, glide]                — normal marker, lerp from last-seen
-        //                                position to the terminal
-        //   [glide, glide+hold]       — turnaround glyph at full opacity
-        //   [glide+hold, +fade]       — turnaround glyph fading out
-        if (ageMs < TURNAROUND_GLIDE_MS) {
-          const t = ageMs / TURNAROUND_GLIDE_MS;
-          out.push({
-            rn,
-            line: drop.lastT.line,
-            lat: drop.lastT.lat + (drop.turnaroundEnd.lat - drop.lastT.lat) * t,
-            lon: drop.lastT.lon + (drop.turnaroundEnd.lon - drop.lastT.lon) * t,
-            heading: drop.lastT.heading,
-            destination: drop.lastT.destination,
-            nextStation: drop.lastT.nextStation,
-            trDr: drop.lastT.trDr,
-          });
-          continue;
-        }
-        const postGlideMs = ageMs - TURNAROUND_GLIDE_MS;
-        if (postGlideMs > TURNAROUND_HOLD_MS + TURNAROUND_FADE_MS) continue;
-        const opacity =
-          postGlideMs <= TURNAROUND_HOLD_MS
-            ? 1
-            : Math.max(0, 1 - (postGlideMs - TURNAROUND_HOLD_MS) / TURNAROUND_FADE_MS);
-        out.push({
-          rn,
-          line: drop.lastT.line,
-          lat: drop.turnaroundEnd.lat,
-          lon: drop.turnaroundEnd.lon,
-          heading: drop.lastT.heading,
-          destination: drop.lastT.destination,
-          nextStation: drop.lastT.nextStation,
-          trDr: drop.lastT.trDr,
-          turnaround: true,
-          opacity,
-        });
-        continue;
-      }
-      const fadeMs = Math.max(1, videoEndTs - drop.lastSeenTs);
-      let lat = drop.lastT.lat;
-      let lon = drop.lastT.lon;
-      if (hasPolyline && drop.lastT.track != null) {
-        const newTrack = drop.lastT.track + drop.speedFtPerSec * (ageMs / 1000);
-        const p = pointAlongLine(linePts, lineCum, newTrack);
-        if (p) {
-          lat = p.lat;
-          lon = p.lon;
-        }
-      }
-      const opacity = Math.max(0.15, 1 - ageMs / fadeMs);
-      out.push({
-        rn,
-        line: drop.lastT.line,
-        lat,
-        lon,
-        heading: drop.lastT.heading,
-        destination: drop.lastT.destination,
-        nextStation: drop.lastT.nextStation,
-        trDr: drop.lastT.trDr,
-        ghost: true,
-        opacity,
+  const pushFrame = (frameTs) => {
+    const frame = [];
+    for (const series of seriesByRn.values()) {
+      const st = vehicleStateAt(series, frameTs, {
+        pointAlong,
+        realTerminalEnds: ends,
+        videoEndTs,
       });
+      if (!st) continue;
+      if (st.ghost) anyGhost = true;
+      frame.push(st);
     }
-    return out;
-  }
+    trainFrames.push(frame);
+    frameTimes.push(frameTs);
+  };
 
   for (let i = 0; i < snapshots.length - 1; i++) {
-    const a = new Map(snapshots[i].trains.map((t) => [t.rn, t]));
-    const b = new Map(snapshots[i + 1].trains.map((t) => [t.rn, t]));
-    // Tail-dropped RNs render normally up to their last-seen snapshot, then
-    // hand off to the fading ghost so the train appears as usual before the
-    // signal loss instead of materializing gray near the end.
-    const rns = allRns.filter((rn) => {
-      const drop = tailDrops.get(rn);
-      if (drop && i >= drop.lastSeenIdx) return false;
-      return a.has(rn) || b.has(rn);
-    });
-    for (let k = 0; k < interpolate; k++) {
-      const t = k / interpolate;
-      const frame = [];
-      for (const rn of rns) {
-        const ta = a.get(rn);
-        const tb = b.get(rn);
-        const from = ta || tb;
-        const to = tb || ta;
-        // Polyline interp when both endpoints are snapped; Cartesian fallback would cut across curves.
-        let lat, lon;
-        if (hasPolyline && from.track != null && to.track != null) {
-          const track = from.track + (to.track - from.track) * t;
-          const p = pointAlongLine(linePts, lineCum, track);
-          if (p) {
-            lat = p.lat;
-            lon = p.lon;
-          }
-        }
-        if (lat == null) {
-          lat = from.lat + (to.lat - from.lat) * t;
-          lon = from.lon + (to.lon - from.lon) * t;
-        }
-        frame.push({
-          rn,
-          line: from.line,
-          lat,
-          lon,
-          heading: from.heading,
-          destination: from.destination,
-          nextStation: from.nextStation,
-          trDr: from.trDr,
-        });
-      }
-      const frameTs = snapshots[i].ts + (snapshots[i + 1].ts - snapshots[i].ts) * t;
-      frame.push(...ghostsAt(frameTs));
-      trainFrames.push(frame);
-      frameTimes.push(frameTs);
-    }
+    const span = snapshots[i + 1].ts - snapshots[i].ts;
+    for (let k = 0; k < interpolate; k++) pushFrame(snapshots[i].ts + (span * k) / interpolate);
   }
-  const finalFrame = allRns.filter((rn) => finalByRn.has(rn)).map((rn) => finalByRn.get(rn));
-  finalFrame.push(...ghostsAt(snapshots[lastSnapIdx].ts));
-  trainFrames.push(finalFrame);
-  frameTimes.push(videoEndTs);
+  pushFrame(videoEndTs);
 
   // Comet trails: recent path behind each moving train (~TRAIL_MS of real time).
   const trailFrames = Math.max(2, Math.round(TRAIL_MS / (tickMs / interpolate)));
@@ -412,7 +234,7 @@ async function renderTrainBunchingClip(
   try {
     for (let i = 0; i < trainFrames.length; i++) {
       const buf = await renderTrainBunchingFrame(view, baseMap, trainFrames[i], {
-        showGhostLegend: [...tailDrops.values()].some((d) => !d.turnaroundEnd),
+        showGhostLegend: anyGhost,
         labels,
         clock: { elapsedSec: (frameTimes[i] - clipStartTs) / 1000, totalSec },
       });
@@ -449,7 +271,7 @@ async function renderTrainBunchingClip(
       elapsedSec,
       initialDistFt,
       finalDistFt,
-      hadGhosts: tailDrops.size > 0,
+      hadGhosts: anyGhost,
     };
   } finally {
     await Fs.remove(tmpDir).catch(() => {});

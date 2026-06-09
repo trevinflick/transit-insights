@@ -30,6 +30,9 @@ Fs.removeSync(TMP);
 const { getDb } = require('../../src/shared/history');
 const {
   recordBusObservations,
+  recordTrainObservations,
+  getTrainObservations,
+  getRecentTrainPositions,
   getLatestBusSnapshot,
   getRecentBusObservationsByRoute,
   countDistinctTsInBusObservations,
@@ -200,6 +203,52 @@ test('countDistinctTsInBusObservations counts unique ts values', () => {
   const n = countDistinctTsInBusObservations(now - 60_000);
   assert.ok(n >= 2, `expected ≥2 distinct ts, got ${n}`);
   clearBusObs();
+});
+
+function clearTrainObs() {
+  getDb().prepare("DELETE FROM observations WHERE kind = 'train' AND route = 'TEST_TRAIN'").run();
+}
+
+test('recordTrainObservations persists approx + next_station; reads exclude approx by default', () => {
+  clearTrainObs();
+  const now = Date.now();
+  recordTrainObservations(
+    [
+      { line: 'TEST_TRAIN', rn: 'real', trDr: '1', lat: 41.9, lon: -87.6 },
+      {
+        line: 'TEST_TRAIN',
+        rn: 'recovered',
+        trDr: '1',
+        lat: 42.0,
+        lon: -87.67,
+        approx: true,
+        nextStation: 'Howard',
+      },
+    ],
+    now,
+  );
+
+  // Detection read: approx is hidden so ghost/pulse counts are unchanged.
+  const detect = getTrainObservations('TEST_TRAIN', now - 1000);
+  assert.deepEqual(
+    detect.map((r) => r.vehicle_id).sort(),
+    ['real'],
+    'getTrainObservations must exclude approx rows by default',
+  );
+
+  // Visualization read: opt the recovered position in.
+  const viz = getTrainObservations('TEST_TRAIN', now - 1000, { includeApprox: true });
+  assert.deepEqual(viz.map((r) => r.vehicle_id).sort(), ['real', 'recovered']);
+
+  // getRecentTrainPositions mirrors the same default-exclude behavior.
+  const recent = getRecentTrainPositions(now - 1000).filter((r) => r.line === 'TEST_TRAIN');
+  assert.deepEqual(recent.map((r) => r.rn).sort(), ['real']);
+  const recentAll = getRecentTrainPositions(now - 1000, { includeApprox: true }).filter(
+    (r) => r.line === 'TEST_TRAIN',
+  );
+  assert.deepEqual(recentAll.map((r) => r.rn).sort(), ['real', 'recovered']);
+
+  clearTrainObs();
 });
 
 test('rolloff cleans up after the test (sanity)', () => {

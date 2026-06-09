@@ -1,6 +1,7 @@
 const axios = require('axios');
 const { recordTrainObservations } = require('../shared/observations');
 const { withRetry } = require('../shared/retry');
+const { findStationByDestination } = require('./findStation');
 
 const BASE = 'https://lapi.transitchicago.com/api/1.0';
 const ALL_LINES = ['red', 'blue', 'brn', 'g', 'org', 'p', 'pink', 'y'];
@@ -66,7 +67,25 @@ function isInChicagoland(lat, lon) {
   return lat > 41 && lat < 43 && lon > -88.5 && lon < -87;
 }
 
-async function getAllTrainPositions(lines = ALL_LINES) {
+// A train the feed returns at 0,0 (or otherwise out of bounds) is usually still
+// *running* — it just lost its GPS fix for a tick. It almost always still
+// reports `nextStaNm`, so we can recover an approximate position from that
+// station's coords rather than dropping the train and manufacturing a feed gap
+// (the root cause of trains vanishing/reappearing in the replay + videos).
+// Returns a position-patched copy tagged `approx: true`, or null when there's
+// no station to recover from. Pure; station data injected for testing.
+function recoverUnpositionedTrain(train, stations) {
+  const sta = findStationByDestination(train.line, train.nextStation, stations);
+  if (!sta || !Number.isFinite(sta.lat) || !Number.isFinite(sta.lon)) return null;
+  return { ...train, lat: sta.lat, lon: sta.lon, approx: true, recoveredFrom: sta.name };
+}
+
+// `includeApprox` controls only the RETURNED array: detection bins call with the
+// default (false) and see exactly the in-bounds trains they always have, so
+// ghost/gap/pulse/bunching behavior is unchanged. Live video capture passes true
+// to draw recovered trains. Recovered positions are ALWAYS written to
+// `observations` (tagged approx) so the DB-driven replay can bridge the dropout.
+async function getAllTrainPositions(lines = ALL_LINES, { includeApprox = false } = {}) {
   const { data } = await withRetry(
     () =>
       axios.get(`${BASE}/ttpositions.aspx`, {
@@ -79,7 +98,9 @@ async function getAllTrainPositions(lines = ALL_LINES) {
   if (body.errCd !== '0') throw new Error(`Train API error ${body.errCd}: ${body.errNm}`);
 
   const trains = [];
-  let filtered = 0;
+  const approxTrains = [];
+  let recovered = 0;
+  let dropped = 0;
   for (const route of body.route || []) {
     const line = route['@name'];
     // API returns `train` as an object when there's exactly one train on the line,
@@ -87,16 +108,28 @@ async function getAllTrainPositions(lines = ALL_LINES) {
     const raws = Array.isArray(route.train) ? route.train : route.train ? [route.train] : [];
     for (const raw of raws) {
       const train = parseTrain(line, raw);
-      if (!isInChicagoland(train.lat, train.lon)) {
-        filtered++;
+      if (isInChicagoland(train.lat, train.lon)) {
+        trains.push(train);
         continue;
       }
-      trains.push(train);
+      const fixed = recoverUnpositionedTrain(train);
+      if (fixed) {
+        recovered++;
+        approxTrains.push(fixed);
+      } else {
+        dropped++;
+      }
     }
   }
-  if (filtered > 0) console.log(`Filtered ${filtered} train(s) with out-of-bounds coordinates`);
-  recordTrainObservations(trains);
-  return trains;
+  if (recovered > 0 || dropped > 0) {
+    console.log(
+      `Unpositioned trains: recovered ${recovered} from next-station, dropped ${dropped} (no station)`,
+    );
+  }
+  // Persist real + recovered (approx) so the replay sees continuity. The
+  // detection reads in observations.js exclude approx rows by default.
+  recordTrainObservations([...trains, ...approxTrains]);
+  return includeApprox ? [...trains, ...approxTrains] : trains;
 }
 
 // Strip the trailing parenthetical from a station name. Station data carries
@@ -124,6 +157,8 @@ function shortStationName(name) {
 
 module.exports = {
   getAllTrainPositions,
+  recoverUnpositionedTrain,
+  isInChicagoland,
   LINE_COLORS,
   LINE_NAMES,
   lineLabel,

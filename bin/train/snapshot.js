@@ -18,7 +18,9 @@ async function main() {
   const interpolate = argv.interpolate ? parseInt(argv.interpolate, 10) : undefined;
 
   console.log('Fetching initial train positions...');
-  const initialTrains = await getAllTrainPositions();
+  // includeApprox so a train the feed momentarily returns at 0,0 (recovered from
+  // its next-station) shows on the still + first frame, matching the capture loop.
+  const initialTrains = await getAllTrainPositions(undefined, { includeApprox: true });
   if (initialTrains.length === 0) {
     console.log('No trains in service — nothing to post');
     return;

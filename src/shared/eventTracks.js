@@ -97,43 +97,90 @@ function resolveAffectedDir(directionLabel, destByDir) {
   return null;
 }
 
+// A new direction must persist for at least this many consecutive pings before
+// we treat it as a real turnaround and split the track. A 1-ping opposite-dir
+// blip (CTA trDr noise) is absorbed into the current run instead.
+const MIN_DIR_RUN = 2;
+
+// Split a vehicle's ts-ordered rows into runs of a single travel direction. A
+// train that reverses at a terminal under the same run number (rn) otherwise
+// merges into one zig-zag track, which the frontend's monotonic de-jitter then
+// mangles (it drops every "backward" sample, deleting a whole leg). Splitting
+// at the reversal makes each leg its own track that fades out at the terminal
+// and back in on the return — which is what actually happened.
+//
+// `null` directions (legacy rows / unknown) never trigger a split; they inherit
+// the current run. Returns [{ dir, rows }] in time order.
+function segmentByDirection(rows) {
+  const runs = [];
+  for (const r of rows) {
+    const dir = r.dir != null ? String(r.dir) : null;
+    const last = runs[runs.length - 1];
+    if (!last || (dir != null && last.dir != null && last.dir !== dir)) {
+      runs.push({ dir: dir ?? last?.dir ?? null, rows: [r] });
+    } else {
+      if (last.dir == null && dir != null) last.dir = dir;
+      last.rows.push(r);
+    }
+  }
+  if (runs.length <= 1) return runs;
+  // Absorb sub-MIN_DIR_RUN blips into the preceding run, then coalesce adjacent
+  // runs that end up sharing a direction (a blip that split two same-dir runs).
+  const merged = [runs[0]];
+  for (let i = 1; i < runs.length; i++) {
+    const prev = merged[merged.length - 1];
+    if (runs[i].rows.length < MIN_DIR_RUN) prev.rows.push(...runs[i].rows);
+    else merged.push(runs[i]);
+  }
+  const coalesced = [merged[0]];
+  for (let i = 1; i < merged.length; i++) {
+    const prev = coalesced[coalesced.length - 1];
+    if (merged[i].dir === prev.dir) prev.rows.push(...merged[i].rows);
+    else coalesced.push(merged[i]);
+  }
+  return coalesced;
+}
+
 // Build the compact track payload from raw position rows. `rows` are
 // observation rows for the line over the incident window:
 //   { ts, vehicle_id, dir, lat, lon }
 // Samples are stored relative to t0 (seconds) with 5-dp coords to keep the file
 // tiny. Returns null when there's nothing positioned to show.
 function buildTrack(meta, rows, now = Date.now()) {
-  const positioned = (rows ?? []).filter(
-    (r) => Number.isFinite(r.lat) && Number.isFinite(r.lon) && r.vehicle_id != null,
-  );
+  const positioned = (rows ?? [])
+    .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon) && r.vehicle_id != null)
+    // Sort by ts so segmentation + relative-second keys are correct regardless
+    // of the query's row order (defensive — the DB read already ORDER BYs ts).
+    .sort((a, b) => a.ts - b.ts);
   if (positioned.length === 0) return null;
 
-  const t0 = Math.min(...positioned.map((r) => r.ts));
-  const t1 = Math.max(...positioned.map((r) => r.ts));
+  const t0 = positioned[0].ts;
+  const t1 = positioned[positioned.length - 1].ts;
 
-  const byVehicle = new Map();
+  // Group rows per vehicle (ts order preserved), then split each into single-
+  // direction legs. A reversing train becomes `<rn>` and `<rn>~1`, `<rn>~2`…
+  const rowsByVehicle = new Map();
   for (const r of positioned) {
-    let v = byVehicle.get(r.vehicle_id);
-    if (!v) {
-      v = {
-        id: String(r.vehicle_id),
-        dir: r.dir != null ? String(r.dir) : null,
-        samples: new Map(),
-      };
-      byVehicle.set(r.vehicle_id, v);
-    }
-    // Last write wins on a duplicate relative-second key.
-    v.samples.set(Math.round((r.ts - t0) / 1000), [
-      Math.round((r.ts - t0) / 1000),
-      Math.round(r.lat * 1e5) / 1e5,
-      Math.round(r.lon * 1e5) / 1e5,
-    ]);
+    const key = String(r.vehicle_id);
+    if (!rowsByVehicle.has(key)) rowsByVehicle.set(key, []);
+    rowsByVehicle.get(key).push(r);
   }
 
-  const vehicles = [...byVehicle.values()]
-    .map((v) => ({ id: v.id, dir: v.dir, s: [...v.samples.values()].sort((a, b) => a[0] - b[0]) }))
-    .filter((v) => v.s.length > 0)
-    .sort((a, b) => b.s.length - a.s.length);
+  const vehicles = [];
+  for (const [vid, vrows] of rowsByVehicle) {
+    const segs = segmentByDirection(vrows);
+    segs.forEach((seg, idx) => {
+      const samples = new Map(); // relSec -> [relSec, lat, lon], last write wins
+      for (const r of seg.rows) {
+        const relSec = Math.round((r.ts - t0) / 1000);
+        samples.set(relSec, [relSec, Math.round(r.lat * 1e5) / 1e5, Math.round(r.lon * 1e5) / 1e5]);
+      }
+      const s = [...samples.values()].sort((a, b) => a[0] - b[0]);
+      if (s.length === 0) return;
+      vehicles.push({ id: idx === 0 ? vid : `${vid}~${idx}`, dir: seg.dir, s });
+    });
+  }
+  vehicles.sort((a, b) => b.s.length - a.s.length);
   if (vehicles.length === 0) return null;
 
   return {
@@ -153,4 +200,10 @@ function buildTrack(meta, rows, now = Date.now()) {
   };
 }
 
-module.exports = { LONG_TO_SHORT, pickReplayableIncident, resolveAffectedDir, buildTrack };
+module.exports = {
+  LONG_TO_SHORT,
+  pickReplayableIncident,
+  resolveAffectedDir,
+  buildTrack,
+  segmentByDirection,
+};

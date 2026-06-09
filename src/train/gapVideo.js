@@ -9,6 +9,7 @@ const { TYPICAL_TRAIN_SPEED_FT_PER_MIN } = require('./gaps');
 const { computeTrainGapVideoView } = require('../map');
 const { fetchTrainBunchingBaseMap, renderTrainBunchingFrame } = require('../map/train/bunching');
 const { clampTrackSeries, attachTrails } = require('./bunchingVideo');
+const { MAX_BRIDGE_MS } = require('../shared/videoTracks');
 const { smoothSeries } = require('../shared/stats');
 const { buildLinePolyline, snapToLine, pointAlongLine } = require('./speedmap');
 
@@ -75,20 +76,29 @@ async function captureTrainGapVideo(gap, lineColors, trainLines, stations, opts 
   if (startRemaining > MAX_APPROACH_FT) return null;
 
   const snapshots = [{ ts: Date.now(), train: gap.trailing }];
+  let lastSeenTs = Date.now();
   for (let i = 1; i < ticks; i++) {
     await sleep(tickMs);
     let train = null;
     try {
-      const all = await getAllTrainPositions([gap.line]);
+      const all = await getAllTrainPositions([gap.line], { includeApprox: true });
       train = all.find((t) => t.line === gap.line && t.rn === rn) || null;
     } catch (e) {
       console.warn(`train gap video tick ${i}: fetch failed — ${e.message}`);
       continue;
     }
     if (!train) {
-      console.log(`train gap video: trailing run ${rn} dropped at tick ${i}, stopping`);
-      break;
+      // Brief feed dropout: skip this tick and keep going — renderTrainGapClip
+      // bridges across the wider gap. Only give up once the train's been gone
+      // long enough that it's not coming back (matches the kernel's bridge cap).
+      if (Date.now() - lastSeenTs > MAX_BRIDGE_MS) {
+        console.log(`train gap video: trailing run ${rn} gone > bridge cap, stopping`);
+        break;
+      }
+      console.log(`train gap video: trailing run ${rn} dropped at tick ${i}, bridging`);
+      continue;
     }
+    lastSeenTs = Date.now();
     snapshots.push({ ts: Date.now(), train });
   }
 

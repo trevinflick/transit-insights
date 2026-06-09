@@ -75,6 +75,25 @@ The ghost marker uses a desaturated gray fill and a dashed white ring so viewers
 
 Note: this "ghost" is distinct from the ghost-bus detection in `src/{bus,train}/ghosts.js` (scheduled trips with no live vehicle reporting all hour) — it's purely a video-rendering treatment for tail-dropped GPS reports.
 
+**Shared dropout kernel.** The handling above is the conceptual baseline; both
+bus and train timelapses now route *all* dropout handling through the shared
+**`src/shared/videoTracks.js`** kernel, which generalizes it to *every* gap, not
+just the tail: short feed gaps (≤ 8 min) are **bridged** by interpolation (dimmed
+by staleness), long interior gaps fade to a ghost on each side and draw nothing
+through the unknown middle, tail drops dead-reckon along the polyline, and a drop
+at a real terminal plays a turnaround glyph. The same model powers the train
+videos (bunching/gap/snapshot) and the frontend's "Watch it unfold" replay — see
+`docs/REPLAY.md`.
+
+This replaced the bus side's older `fillInteriorGaps`, which bridged interior
+gaps with **no cap** (a 20-min unknown was fabricated as a smooth glide); the
+kernel caps bridging at 8 min and ghosts longer gaps, since past that we
+genuinely don't know where the bus was. Bus specifics preserved through kernel
+options: end-to-end polylines mean both endpoints are real terminals, a `vid`
+that reappeared under a different `pid` is a *proven* turnaround (forced via an
+explicit `turnaroundEnd`), and the U-turn glyph **parks** at the terminus rather
+than fading (`turnaroundPark`).
+
 ## Why this approach
 
 The signal is geometric, not statistical: vehicles on the same pattern, close together, in service territory. Most of the code is filtering — terminal layovers, ghost reports, opposite-direction noise — to make sure the post matches what a rider on the street would actually see.
