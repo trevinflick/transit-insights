@@ -75,6 +75,104 @@ function recordTrainObservations(trains, now = Date.now()) {
   }
 }
 
+// Metra GTFS-rt VehiclePositions. Stored in the shared observations table with
+// kind='metra' so the corridor/speed reads work the same as bus/train, plus the
+// GTFS `trip_id` (which joins directly to the static schedule index — unlike CTA,
+// where vehicles are anonymous). `direction`/`destination` are left null at
+// ingest; detectors resolve them from the index via trip_id. Errors swallowed so
+// a logger hiccup never breaks the API caller.
+function recordMetraObservations(positions, now = Date.now()) {
+  if (!positions || positions.length === 0) return;
+  try {
+    const stmt = getDb().prepare(`
+      INSERT INTO observations
+        (ts, kind, route, direction, vehicle_id, destination, lat, lon, heading, vehicle_ts, trip_id)
+      VALUES (?, 'metra', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const tx = getDb().transaction((items) => {
+      for (const p of items) {
+        // A position with no route is unusable; skip. vehicle_id falls back
+        // through label → vehicleId → tripId so a row always has an id.
+        if (!p.routeId) continue;
+        const vid = p.label || p.vehicleId || p.tripId;
+        if (!vid) continue;
+        stmt.run(
+          now,
+          String(p.routeId),
+          null,
+          String(vid),
+          null,
+          Number.isFinite(p.lat) ? p.lat : null,
+          Number.isFinite(p.lon) ? p.lon : null,
+          Number.isFinite(p.bearing) ? Math.round(p.bearing) : null,
+          Number.isFinite(p.ts) ? p.ts : null,
+          p.tripId != null ? String(p.tripId) : null,
+        );
+      }
+    });
+    tx(positions);
+  } catch (e) {
+    console.warn(`recordMetraObservations failed: ${e.message}`);
+  }
+}
+
+// Metra GTFS-rt TripUpdates flattened to one row per (snapshot tick, trip, stop).
+// This is the delay + inferred-cancellation substrate: a scheduled trip whose
+// stops carry concrete predictions is running; one whose stops stay NO_DATA past
+// its departure is a candidate ghost. Errors swallowed (see above).
+function recordMetraTripUpdates(tripUpdates, now = Date.now()) {
+  if (!tripUpdates || tripUpdates.length === 0) return;
+  try {
+    const stmt = getDb().prepare(`
+      INSERT INTO metra_trip_updates
+        (ts, trip_id, route, label, schedule_relationship, stop_id, stop_sequence,
+         stop_schedule_relationship, predicted_arr, predicted_dep, delay_sec, vehicle_ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const tx = getDb().transaction((items) => {
+      for (const tu of items) {
+        if (!tu.tripId || !tu.routeId) continue;
+        // A trip with no stop_time_updates still gets one summary row (stop
+        // fields null) so a CANCELED trip with an empty stop list is recorded.
+        const stops = tu.stopUpdates && tu.stopUpdates.length > 0 ? tu.stopUpdates : [null];
+        for (const s of stops) {
+          stmt.run(
+            now,
+            String(tu.tripId),
+            String(tu.routeId),
+            tu.label != null ? String(tu.label) : null,
+            tu.scheduleRelationship != null ? String(tu.scheduleRelationship) : null,
+            s?.stopId != null ? String(s.stopId) : null,
+            Number.isFinite(s?.stopSequence) ? s.stopSequence : null,
+            s?.scheduleRelationship != null ? String(s.scheduleRelationship) : null,
+            Number.isFinite(s?.arrivalTime) ? s.arrivalTime : null,
+            Number.isFinite(s?.departureTime) ? s.departureTime : null,
+            Number.isFinite(s?.delay) ? s.delay : null,
+            Number.isFinite(tu.timestamp) ? tu.timestamp : null,
+          );
+        }
+      }
+    });
+    tx(tripUpdates);
+  } catch (e) {
+    console.warn(`recordMetraTripUpdates failed: ${e.message}`);
+  }
+}
+
+// Recent Metra positions for corridor/speed reads, mirroring
+// getRecentTrainPositions. `direction`/`destination` are null until a detector
+// resolves them from the schedule index, so callers join on trip_id.
+function getRecentMetraPositions(sinceTs) {
+  return getDb()
+    .prepare(`
+    SELECT ts, route, vehicle_id, trip_id, lat, lon, heading
+    FROM observations
+    WHERE kind = 'metra' AND ts >= ? AND lat IS NOT NULL AND lon IS NOT NULL
+    ORDER BY ts
+  `)
+    .all(sinceTs);
+}
+
 // `direction` carries the pid; callers resolve to a pattern downstream.
 function getBusObservations(route, sinceTs) {
   return getDb()
@@ -253,6 +351,9 @@ function getLineCorridorBbox(line, sinceTs) {
 module.exports = {
   recordBusObservations,
   recordTrainObservations,
+  recordMetraObservations,
+  recordMetraTripUpdates,
+  getRecentMetraPositions,
   getBusObservations,
   getLastBusObservationTs,
   getKnownBusPidsForRoute,

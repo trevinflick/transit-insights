@@ -18,9 +18,17 @@ transit-quality posts. **Cron-driven, no daemon.** Each
   migrations: `src/shared/history.js#db()`.
 - Train side: `getAllTrainPositions()` covers all 8 lines in one call, so any
   train job can write to `observations`. No dedicated observer.
+- **Metra** (Chicago commuter rail) is being added as a third mode under
+  `src/metra/` + `scripts/observeMetra.js` + `scripts/fetch-metra-gtfs.js`.
+  Unlike CTA, Metra is timetabled and GTFS-realtime binds each scheduled
+  `trip_id` to live predictions — so its detectors (cancellation, delay) read
+  schedule adherence directly instead of reconstructing it statistically.
+  **Phase 0 (ingestion + schedule index + geometry) is built**; detection +
+  posting + frontend are phased in `plan-6-9-26.md` (repo root). See
+  `docs/METRA.md`.
 
 **Read first**: `README.md`, `cron/crontab.txt` (what runs when, with stagger
-comments), `docs/{ALERTS,BUNCHING,GAPS,GHOSTING,SPEEDMAP}.md`.
+comments), `docs/{ALERTS,BUNCHING,GAPS,GHOSTING,SPEEDMAP,METRA}.md`.
 
 ## Hard rules
 
@@ -140,6 +148,9 @@ Four cases (pulse-first/CTA-first/pulse-only/CTA-only) detailed in
 | Cooldown acquire / race | `src/shared/state.js`, `src/shared/postDetection.js` |
 | GTFS index lookups / build | `src/shared/gtfs.js`, `scripts/fetch-gtfs.js` |
 | Bus / Train API | `src/bus/api.js`, `src/train/api.js` |
+| Metra API / feed decode | `src/metra/api.js` (GTFS-rt protobuf), `scripts/observeMetra.js` |
+| Metra schedule index + line/station geometry | `scripts/fetch-metra-gtfs.js`, `src/metra/data/*` |
+| Metra line metadata | `src/metra/lines.js` |
 | Bunching / Gap / Ghost detection | `src/{bus,train}/{bunching,gaps,ghosts}.js` |
 | Pulse | `src/{bus,train}/pulse.js` + `bin/{bus,train}/pulse.js` |
 | Speedmap | `src/{bus,train}/speedmap.js` |
@@ -187,6 +198,9 @@ detection at synthetic `now` against historical observations
 `.env` at repo root (see `.env.example`):
 
 - `CTA_TRAIN_KEY`, `CTA_BUS_KEY`, `MAPBOX_TOKEN`
+- `METRA_API_KEY` — Metra GTFS-realtime token (`api_token` query param)
 - `BLUESKY_SERVICE` (optional, default `https://bsky.social`)
 - `BLUESKY_{BUS,TRAIN,ALERTS}_{IDENTIFIER,APP_PASSWORD}`
+- `BLUESKY_METRA_{IDENTIFIER,APP_PASSWORD}` (analytics: speedmap/recap) and
+  `BLUESKY_METRA_ALERTS_{IDENTIFIER,APP_PASSWORD}` (Metra disruptions/alerts)
 - `HISTORY_DB_PATH` overrides default `state/history.sqlite` (tests)

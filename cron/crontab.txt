@@ -97,6 +97,16 @@ R=/path/to/cta-insights/bin/cron-run.sh
 # window, vs ~7-8 at the prior 2-min cadence — visibly continuous motion.
 *       *  *  *  *   $R observe-trains   scripts/observeTrains.js
 
+# --- Metra ---
+# observe-metra polls the Metra GTFS-realtime positions + tripUpdates feeds every
+# 30s (two ticks 30s apart per firing, like observe-trains). Metra uses a separate
+# API token (METRA_API_KEY), so this is NOT on the CTA 100k/day budget: ~4 calls/min
+# = ~5.8k/day. Writes positions to observations(kind='metra') + per-stop predictions
+# to metra_trip_updates — the substrate for the (forthcoming) delay/cancellation
+# detectors. Detection + posting jobs (metra-alerts, metra-speedmap,
+# metra-cancellations) are added in later phases — see plan-6-9-26.md / docs/METRA.md.
+*       *  *  *  *   $R observe-metra    scripts/observeMetra.js
+
 # --- Recaps ---
 20      10 *  *  0   $R bus-recap        bin/bus/recap.js   --window=week
 25      10 *  *  0   $R train-recap      bin/train/recap.js --window=week
@@ -108,6 +118,10 @@ R=/path/to/cta-insights/bin/cron-run.sh
 
 # --- Reference data refresh ---
 15      3  *  *  *   $R fetch-gtfs       scripts/fetch-gtfs.js
+# fetch-metra-gtfs rebuilds the Metra schedule index + line/station geometry. Offset
+# to :45 so it doesn't share a wall minute with fetch-gtfs (:15). No-ops when Metra's
+# published.txt marker is unchanged, so most nights it's a cheap HEAD-and-skip.
+45      3  *  *  *   $R fetch-metra-gtfs scripts/fetch-metra-gtfs.js
 0       4  1  *  *   $R fetch-signals    scripts/fetch-signals.js
 
 # --- Web data publish ---

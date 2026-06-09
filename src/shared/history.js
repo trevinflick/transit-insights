@@ -219,10 +219,36 @@ function db() {
       heading INTEGER,
       vehicle_ts INTEGER,
       approx INTEGER,
-      next_station TEXT
+      next_station TEXT,
+      trip_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_obs_kind_route_ts
       ON observations(kind, route, ts);
+
+    -- Metra GTFS-realtime TripUpdate snapshots: one row per (snapshot tick,
+    -- trip, stop). The substrate for delay computation and inferred-cancellation
+    -- detection (a scheduled trip whose stops never get a live prediction).
+    -- Unlike CTA, Metra binds each scheduled trip_id to live predictions, so we
+    -- store the per-stop predicted vs scheduled times directly rather than
+    -- reconstructing service statistically. 7-day rolloff like observations.
+    CREATE TABLE IF NOT EXISTS metra_trip_updates (
+      ts INTEGER NOT NULL,
+      trip_id TEXT NOT NULL,
+      route TEXT NOT NULL,
+      label TEXT,
+      schedule_relationship TEXT,
+      stop_id TEXT,
+      stop_sequence INTEGER,
+      stop_schedule_relationship TEXT,
+      predicted_arr INTEGER,
+      predicted_dep INTEGER,
+      delay_sec INTEGER,
+      vehicle_ts INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_metra_tu_trip_ts
+      ON metra_trip_updates(trip_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_metra_tu_route_ts
+      ON metra_trip_updates(route, ts);
   `);
 
   // Column migrations for DBs that predate the current schema.
@@ -258,6 +284,9 @@ function db() {
     // recovery source for debugging / future refinement.
     ['approx', 'INTEGER'],
     ['next_station', 'TEXT'],
+    // Metra positions carry a GTFS trip_id (e.g. `BNSF_BN1272_V2_B`) that joins
+    // directly to the static schedule index. CTA bus/train rows leave it null.
+    ['trip_id', 'TEXT'],
   ]) {
     if (!obsCols.includes(name)) _db.exec(`ALTER TABLE observations ADD COLUMN ${name} ${type}`);
   }
@@ -449,6 +478,11 @@ function rolloffOld(now = Date.now()) {
   db()
     .prepare('DELETE FROM meta_signals WHERE ts < ?')
     .run(now - 2 * DAY_MS);
+  // Metra trip-update snapshots are live-detection substrate (delay + inferred
+  // cancellation), not a historical archive — 7-day rolloff like observations.
+  db()
+    .prepare('DELETE FROM metra_trip_updates WHERE ts < ?')
+    .run(now - 7 * DAY_MS);
 }
 
 function getAlertPost(alertId) {
