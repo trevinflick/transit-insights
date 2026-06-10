@@ -15,6 +15,7 @@ const {
 } = require('../../src/metra/metraAlerts');
 const {
   buildLineCorridor,
+  decimatePolyline,
   buildMetraTracks,
   computeMetraSamples,
   directionLabel,
@@ -282,6 +283,23 @@ test('computeMetraSamples yields a plausible mph for a ~0.8mi/60s hop', () => {
   const samples = byDir.get('1');
   assert.ok(samples && samples.length === 1);
   assert.ok(samples[0].mph > 20 && samples[0].mph < 90, `mph ${samples[0].mph}`);
+});
+
+test('decimatePolyline thins dense vertices but keeps endpoints', () => {
+  // 100 points spaced ~100 ft apart along a meridian (~111 ft/0.0003 deg lat).
+  const pts = Array.from({ length: 100 }, (_, i) => [41.8 + i * 0.0003, -87.9]);
+  const out = decimatePolyline(pts, 1320);
+  assert.ok(out.length < pts.length, 'thinned');
+  assert.deepStrictEqual(out[0], pts[0], 'keeps first');
+  assert.deepStrictEqual(out[out.length - 1], pts[pts.length - 1], 'keeps last');
+  // A short 2-point line is returned unchanged.
+  assert.strictEqual(
+    decimatePolyline([
+      [41.8, -87.9],
+      [41.9, -87.9],
+    ]).length,
+    2,
+  );
 });
 
 test('directionLabel maps GTFS direction_id to rider labels', () => {

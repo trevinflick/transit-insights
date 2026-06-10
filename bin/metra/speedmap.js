@@ -31,8 +31,13 @@ const { formatTimeCT } = require('../../src/shared/format');
 const metraLines = require('../../src/metra/data/metraLines.json');
 
 const DRY_RUN = process.env.METRA_DRY_RUN === '1' || argv['dry-run'];
-const FT_PER_BIN = 2640; // 0.5 mi/bin
+// 1 mi/bin (vs 0.5 for CTA): commuter-rail stations are ~1–3 mi apart, and the
+// long Metra corridors (up to 63 mi) would otherwise produce so many bins the
+// Mapbox static-map URL exceeds its length limit. MAX_BINS caps the longest
+// lines for the same reason — see src/metra/speedmap.js#decimatePolyline.
+const FT_PER_BIN = 5280;
 const MIN_BINS = 8;
+const MAX_BINS = 40;
 const DEFAULT_DURATION_MIN = 60;
 const MIN_COVERAGE = 0.3;
 
@@ -111,7 +116,7 @@ async function main() {
     );
   }
 
-  const numBins = Math.max(MIN_BINS, Math.round(corridor.totalFt / FT_PER_BIN));
+  const numBins = Math.min(MAX_BINS, Math.max(MIN_BINS, Math.round(corridor.totalFt / FT_PER_BIN)));
   const binSpeedsByDir = {};
   const dirSummaries = [];
   // Sort directions so the inbound ribbon is consistent run-to-run (1 then 0).

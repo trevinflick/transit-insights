@@ -12,8 +12,32 @@
 // branches) project off-line and are dropped by maxPerpFt — branch coverage is
 // a later refinement. Documented in docs/METRA.md.
 
-const { cumulativeDistances } = require('../shared/geo');
+const { cumulativeDistances, haversineFt } = require('../shared/geo');
 const { computeTrainSamples } = require('../train/speedmap');
+
+// Metra GTFS shapes are high-resolution (200–360 vertices per line over 30–60
+// mi) — far denser than CTA's ~80-vertex L polylines. Rendered verbatim, the
+// Mapbox static-map URL (one path overlay per speed bin, each encoding a ribbon
+// slice) blows the ~8 KB URL limit and returns HTTP 414. Decimating to a ¼-mi
+// minimum vertex spacing preserves the visible corridor shape while cutting the
+// point count ~60%, which (with the 1-mi bins + bin cap in the bin) keeps every
+// line's URL comfortably under the limit. Endpoints are always kept.
+const DECIMATE_MIN_GAP_FT = 1320;
+
+function decimatePolyline(points, minGapFt = DECIMATE_MIN_GAP_FT) {
+  if (points.length <= 2) return points;
+  const out = [points[0]];
+  let last = points[0];
+  for (let i = 1; i < points.length - 1; i++) {
+    const d = haversineFt({ lat: last[0], lon: last[1] }, { lat: points[i][0], lon: points[i][1] });
+    if (d >= minGapFt) {
+      out.push(points[i]);
+      last = points[i];
+    }
+  }
+  out.push(points[points.length - 1]);
+  return out;
+}
 
 // Commuter rail runs much faster than the L, so the CTA TRAIN_THRESHOLDS
 // (15/25/35/45) would paint nearly everything green. These spread the gradient
@@ -36,8 +60,9 @@ function buildLineCorridor(metraLines, route) {
     if (!best || pl.length > best.length) best = pl;
   }
   if (!best) return null;
-  const cumDist = cumulativeDistances(best.map(([lat, lon]) => ({ lat, lon })));
-  return { points: best, cumDist, totalFt: cumDist[cumDist.length - 1] };
+  const points = decimatePolyline(best);
+  const cumDist = cumulativeDistances(points.map(([lat, lon]) => ({ lat, lon })));
+  return { points, cumDist, totalFt: cumDist[cumDist.length - 1] };
 }
 
 // GTFS direction_id by convention: 1 = inbound (toward downtown Chicago),
@@ -81,6 +106,7 @@ module.exports = {
   METRA_THRESHOLDS,
   METRA_SAMPLE_OPTS,
   buildLineCorridor,
+  decimatePolyline,
   buildMetraTracks,
   computeMetraSamples,
   directionLabel,
