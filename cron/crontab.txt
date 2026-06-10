@@ -103,9 +103,16 @@ R=/path/to/cta-insights/bin/cron-run.sh
 # API token (METRA_API_KEY), so this is NOT on the CTA 100k/day budget: ~4 calls/min
 # = ~5.8k/day. Writes positions to observations(kind='metra') + per-stop predictions
 # to metra_trip_updates — the substrate for the (forthcoming) delay/cancellation
-# detectors. Detection + posting jobs (metra-alerts, metra-speedmap,
-# metra-cancellations) are added in later phases — see plan-6-9-26.md / docs/METRA.md.
+# detectors. Detection + posting jobs land phase by phase — see plan-6-9-26.md.
 *       *  *  *  *   $R observe-metra    scripts/observeMetra.js
+# metra-alerts republishes Metra's GTFS-rt service alerts to @metraalertinsights and
+# posts a threaded resolved reply when one drops out of the feed. Odd minutes; the
+# account is Metra-only so it can't collide with the CTA alerts threading.
+1-59/2  *  *  *  *   $R metra-alerts     bin/metra/alerts.js
+# metra-speedmap posts a per-line corridor speedmap to @metrainsights every 2 hours,
+# round-robin across the 11 lines. Offset to :30 so it doesn't share a wall minute
+# with bus-/train-speedmap (:00). Reads recorded observations (no live poll).
+30      */2 *  *  *  $R metra-speedmap   bin/metra/speedmap.js
 
 # --- Recaps ---
 20      10 *  *  0   $R bus-recap        bin/bus/recap.js   --window=week

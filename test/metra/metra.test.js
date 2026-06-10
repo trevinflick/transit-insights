@@ -8,6 +8,17 @@ const {
   buildLineGeometry,
   buildLineStations,
 } = require('../../scripts/fetch-metra-gtfs');
+const {
+  isSignificantMetraAlert,
+  alertRelevance,
+  buildMetraAlertText,
+} = require('../../src/metra/metraAlerts');
+const {
+  buildLineCorridor,
+  buildMetraTracks,
+  computeMetraSamples,
+  directionLabel,
+} = require('../../src/metra/speedmap');
 
 // --- lines.js ---
 
@@ -154,4 +165,127 @@ test('buildLineStations uses the longest trip and maps through stops', () => {
   const st = buildLineStations(trips, stops);
   assert.strictEqual(st['UP-W'].length, 2);
   assert.deepStrictEqual(st['UP-W'][0], { id: 'A', name: 'Elburn', lat: 41.8, lon: -88.5 });
+});
+
+// --- metraAlerts.js significance gate ---
+
+function alert({ route = 'BNSF', header = '', description = '', effect = 'UNKNOWN_EFFECT' } = {}) {
+  const informedEntities =
+    route === null ? [{ agencyId: 'METRA' }] : [{ agencyId: 'METRA', routeId: route }];
+  return { id: 'X', informedEntities, effect, header, description };
+}
+
+test('alert gate admits a real cancellation', () => {
+  assert.ok(
+    isSignificantMetraAlert(
+      alert({
+        header: 'UPW train #56 will not operate',
+        description: 'due to a mechanical failure',
+      }),
+    ),
+  );
+});
+
+test('alert gate rejects ADA / construction / elevator notices', () => {
+  assert.ok(
+    !isSignificantMetraAlert(
+      alert({
+        header: 'NCS - Grayslake ADA Accessibility',
+        description: 'use alternate boarding stations during station construction',
+      }),
+    ),
+  );
+  assert.ok(!isSignificantMetraAlert(alert({ header: 'Kenosha Elevator Out of Service' })));
+  assert.ok(!isSignificantMetraAlert(alert({ header: 'Kedzie Station Construction' })));
+});
+
+test('alert gate requires a magnitude for delays (bare "delay" is not major)', () => {
+  assert.ok(
+    !isSignificantMetraAlert(alert({ description: 'minor delay expected during construction' })),
+  );
+  assert.ok(
+    isSignificantMetraAlert(
+      alert({ header: 'Train 334', description: 'operating 22 to 27 minutes behind schedule' }),
+    ),
+  );
+});
+
+test('alert gate admits on a strong structured effect regardless of keywords', () => {
+  assert.ok(isSignificantMetraAlert(alert({ header: 'Service note', effect: 'NO_SERVICE' })));
+});
+
+test('alertRelevance distinguishes line-scoped from agency-wide', () => {
+  assert.deepStrictEqual(alertRelevance(alert({ route: 'ME' })).lines, ['ME']);
+  const wide = alertRelevance(alert({ route: null }));
+  assert.ok(wide.agencyWide && wide.lines.length === 0 && wide.relevant);
+});
+
+test('buildMetraAlertText is Metra-branded and within the post limit', () => {
+  const text = buildMetraAlertText(
+    alert({ header: 'UPW train #56 will not operate', description: 'x'.repeat(400) }),
+  );
+  assert.match(text, /Per Metra/);
+  assert.ok([...text].length <= 300);
+});
+
+// --- speedmap detector ---
+
+test('buildLineCorridor returns the longest polyline for a line', () => {
+  const geo = {
+    BNSF: [
+      [
+        [41.7, -88.3],
+        [41.71, -88.2],
+      ],
+      [
+        [41.7, -88.3],
+        [41.71, -88.2],
+        [41.72, -88.1],
+        [41.73, -88.0],
+      ],
+    ],
+  };
+  const c = buildLineCorridor(geo, 'BNSF');
+  assert.strictEqual(c.points.length, 4);
+  assert.ok(c.totalFt > 0 && c.cumDist.length === 4);
+  assert.strictEqual(buildLineCorridor(geo, 'NOPE'), null);
+});
+
+test('buildMetraTracks groups by trip and resolves direction from the index', () => {
+  const rows = [
+    { ts: 1, trip_id: 'T1', lat: 41.7, lon: -88.3 },
+    { ts: 2, trip_id: 'T1', lat: 41.71, lon: -88.2 },
+    { ts: 1, trip_id: 'T2', lat: 41.8, lon: -88.1 },
+  ];
+  const tracks = buildMetraTracks(rows, { T1: { direction_id: 1 }, T2: { direction_id: 0 } });
+  assert.strictEqual(tracks.get('T1').get('1').length, 2);
+  assert.strictEqual(tracks.get('T2').get('0').length, 1);
+});
+
+test('computeMetraSamples yields a plausible mph for a ~0.8mi/60s hop', () => {
+  const geo = {
+    L: [
+      [
+        [41.85, -87.9],
+        [41.86, -87.9],
+        [41.87, -87.9],
+        [41.88, -87.9],
+      ],
+    ],
+  };
+  const c = buildLineCorridor(geo, 'L');
+  const rows = [
+    { ts: 0, route: 'L', trip_id: 'T1', lat: 41.852, lon: -87.9 },
+    { ts: 60000, route: 'L', trip_id: 'T1', lat: 41.864, lon: -87.9 },
+  ];
+  const { byDir } = computeMetraSamples(rows, c, { T1: { direction_id: 1 } });
+  const samples = byDir.get('1');
+  assert.ok(samples && samples.length === 1);
+  assert.ok(samples[0].mph > 20 && samples[0].mph < 90, `mph ${samples[0].mph}`);
+});
+
+test('directionLabel maps GTFS direction_id to rider labels', () => {
+  assert.strictEqual(directionLabel('1'), 'Inbound');
+  assert.strictEqual(directionLabel('0'), 'Outbound');
+  assert.strictEqual(directionLabel('unknown'), 'Unknown direction');
 });

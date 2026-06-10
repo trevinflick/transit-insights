@@ -2,6 +2,8 @@
 
 How the bot builds the daily "this is how fast a route was actually moving" image — the colored map where red means crawling and green means moving well.
 
+> **Metra** has its own speedmap built on this same machinery (position snap-to-line + per-segment mph + binning + the dual-direction renderer), reading from the recorded `observations` table rather than polling live, with commuter-rail-tuned speed thresholds and color ramp. See `docs/METRA.md` (Phase 1 — Speedmap) and `src/metra/speedmap.js` / `src/map/metra/speedmap.js`.
+
 ## What a speedmap shows
 
 A speedmap is a one-hour snapshot of how fast vehicles were moving on a single route, segment by segment. The route is divided into 40 equal-length pieces, each colored by the average speed observed there during the window.

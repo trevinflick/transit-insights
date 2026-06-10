@@ -5,12 +5,13 @@ Bluesky bots that turn CTA train and bus tracker data into Chicago-specific tran
 - **Bus**: [@ctabusinsights.bsky.social](https://bsky.app/profile/ctabusinsights.bsky.social)
 - **Train**: [@ctatraininsights.bsky.social](https://bsky.app/profile/ctatraininsights.bsky.social)
 - **Alerts**: [@ctaalertinsights.bsky.social](https://bsky.app/profile/ctaalertinsights.bsky.social)
+- **Metra**: [@metrainsights.bsky.social](https://bsky.app/profile/metrainsights.bsky.social) (analytics) · [@metraalertinsights.bsky.social](https://bsky.app/profile/metraalertinsights.bsky.social) (disruptions/alerts)
 
 This README is written for operators running their own copy. If you just want to see the output, follow the accounts above. Scroll to the [Examples gallery](#examples-gallery) for sample posts.
 
 ## What it posts
 
-> Each major feature has a deep-dive in [`docs/`](docs/): [bunching](docs/BUNCHING.md), [gaps](docs/GAPS.md), [ghosting](docs/GHOSTING.md), [speedmaps](docs/SPEEDMAP.md), [alerts + pulse](docs/ALERTS.md).
+> Each major feature has a deep-dive in [`docs/`](docs/): [bunching](docs/BUNCHING.md), [gaps](docs/GAPS.md), [ghosting](docs/GHOSTING.md), [speedmaps](docs/SPEEDMAP.md), [alerts + pulse](docs/ALERTS.md), [Metra](docs/METRA.md).
 
 ### Bus (`@ctabusinsights`)
 - **Bunching** — clusters of buses on the same route/direction, as an annotated map. Reply includes a ~10-minute timelapse video of the cluster, with traffic signals and bus stops annotated.
@@ -26,6 +27,12 @@ This README is written for operators running their own copy. If you just want to
 - **Heatmap** — weekly/monthly rollup of chronic bunching + gap stations, with a Loop inset since five lines share the elevated rectangle.
 - **Snapshot** — 15-minute timelapse of every active train system-wide, with a Loop inset.
 - **Ghost trains** — hourly rollup of line/direction pairs missing trains vs. the schedule.
+
+### Metra (`@metrainsights` / `@metraalertinsights`)
+Commuter-rail support is being added in phases (see `docs/METRA.md` and the root `plan-6-9-26.md`). Metra is a timetabled railroad, so its detectors read GTFS-realtime schedule adherence directly rather than reconstructing it statistically. Live so far:
+- **Alerts** — republishes Metra's GTFS-realtime service alerts (cancellations, delays, suspensions) to `@metraalertinsights`, filtered to drop ADA/construction/marketing notices, with a threaded resolved reply when the alert clears.
+- **Speedmap** — a Metra line color-coded by observed train speed along the corridor, two ribbons by direction, posted to `@metrainsights`.
+- **Coming next** — cancellation detection (Metra-confirmed + bot-inferred) and delay tracking, posted as an hourly per-line rollup, plus the chicagotransitalerts.app frontend.
 
 ### Alerts (`@ctaalertinsights`)
 - **Republished CTA alerts** — significant service alerts on tracked routes, filtered to drop the noisy "major" ones (single elevator out, block-party reroutes, etc.). Each post gets a threaded `✅ cleared` reply once CTA marks it resolved.

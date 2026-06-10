@@ -6,8 +6,8 @@ posts we publish for the CTA (cancellations, delays), plus a public dashboard on
 chicagotransitalerts.app.
 
 > **Status:** Phase 0 (ingestion + schedule index + geometry) is built and documented
-> below. Detection/posting (alerts, speedmap, cancellations, delays) and the frontend
-> are still to come — see `plan-6-9-26.md` for the phased plan and
+> below, along with Phase 1 (alert republish + speedmap). Cancellations, delays, and
+> the frontend are still to come — see `plan-6-9-26.md` for the phased plan and
 > `research_6_9_2026_metra.md` (repo root) for the design rationale.
 
 ## Why Metra is different from the CTA side
@@ -132,10 +132,68 @@ Metra uses a separate API token, so it's not on the CTA 100k/day budget.
   7-day rolloff, like `observations`.
 - Helpers: `recordMetraObservations`, `recordMetraTripUpdates`, `getRecentMetraPositions`.
 
+## Phase 1 — alerts + speedmap (built)
+
+### Alerts — `src/metra/metraAlerts.js` + `bin/metra/alerts.js`
+
+Republishes Metra's GTFS-realtime service alerts to the Metra alerts account
+(`loginMetraAlerts`), with a threaded "resolved" reply when an alert drops out of the
+feed. The Metra analog of the CTA republish path, streamlined for Phase 1: text-only
+posts (no disruption maps), no pulse-threading/related-quotes (those arrive with
+cancellations in Phase 2). Reuses the kind-generic `alert_posts` lifecycle helpers with
+`kind='metra'`.
+
+The significance gate (`isSignificantMetraAlert`) is **keyword-driven**, because Metra
+sets `effect = UNKNOWN_EFFECT` on essentially every alert — gating on `effect` alone
+would admit nothing. Over the header + description:
+
+- **MAJOR_PATTERNS admit** — cancellations/annulments ("will not operate"), suspensions,
+  shuttle/bus substitutions, signal/mechanical/disabled-train, police/trespasser, and
+  **qualified** delays. Delays must carry a magnitude ("22 to 27 minutes behind") or a
+  severity word ("significant delays") — bare "delay" is intentionally not major, so
+  "minor delays during construction" doesn't post.
+- **MINOR_PATTERNS veto** — ADA/accessibility, elevator/escalator, parking, construction,
+  station/platform work, schedule-PDF/timetable, marketing (openings, festivals). A MAJOR
+  hit overrides a MINOR hit, so "trains cancelled due to construction" still posts.
+- **Relevance** — an alert must touch a tracked `route_id` or be an agency-wide notice.
+
+Calibrated against the live feed (2026-06-09): 3 of 16 admitted, all genuine (a
+cancellation, an expressing train due to signal problems, a 22–27 min delay). The
+keyword lists will want recalibration as more alert volume is observed (like the CTA
+gate was) — they're the load-bearing constants at the top of `metraAlerts.js`.
+
+> Watch item: resolution tracking assumes the GTFS-rt alert entity `id`
+> (`DevAPI-<UUID>`) is stable across ticks for the lifetime of an alert. If Metra
+> regenerates ids per fetch, the drop-from-feed resolution would mis-fire — verify.
+
+### Speedmap — `src/metra/speedmap.js` + `bin/metra/speedmap.js` + `src/map/metra/speedmap.js`
+
+Corridor map colored by how fast trains are actually moving, posted to the Metra
+analytics account (`loginMetra`). This is the most directly portable detector — it's
+purely position + geometry — so it reuses the CTA train speedmap's snap-to-line,
+per-segment-mph, and binning machinery wholesale. Three Metra specifics:
+
+- **Reads from the DB, not a live poll.** The CTA train speedmap blocks for an hour
+  polling the feed; `observeMetra` already densifies the `observations` table at 30s, so
+  the Metra bin just reads the last `--duration` (default 60) minutes via
+  `getRecentMetraPositions` and filters to the line. Non-blocking.
+- **Direction from `trip_id`.** Each position's GTFS `trip_id` resolves to a
+  `direction_id` (1 = inbound/toward Chicago, 0 = outbound) through the schedule index,
+  replacing the CTA trDr code. Two ribbons, one per direction.
+- **Faster thresholds + color ramp.** Commuter rail cruises at 50–70 mph, so the CTA
+  thresholds (15/25/35/45) would paint everything green. `METRA_THRESHOLDS`
+  (25/40/55/70) and the `colorForMetraSpeed` ramp in `src/map/metra/speedmap.js` spread
+  the gradient across Metra's real range; `maxMph` is raised to 95 so express segments
+  aren't dropped as artifacts.
+
+**v1 scope:** each line renders its single longest GTFS shape as the corridor. Trains on
+diverging branches (ME's South Chicago/Blue Island, UP-NW's McHenry, RI's branches)
+project off-line and are dropped by `maxPerpFt` — full branch coverage is a later
+refinement. Sparse/empty windows record a non-posting row so the round-robin line picker
+(`leastRecentlyPostedSpeedmapRoute`) rotates past them.
+
 ## Forthcoming phases (see `plan-6-9-26.md`)
 
-- **Phase 1** — GTFS-rt alert republish (`loginMetraAlerts`) + position-based speedmap
-  (`loginMetra`).
 - **Phase 2** — cancellations (authoritative + inferred, feed-health guard), posted as
   an **hourly per-line rollup** (ghost cadence; all per-trip data lives on the website).
 - **Phase 3** — delays (record every train's delay for the website; surface systemic
@@ -147,8 +205,14 @@ Metra uses a separate API token, so it's not on the CTA 100k/day budget.
 
 - `src/metra/lines.js` — line metadata + helpers.
 - `src/metra/api.js` — GTFS-rt fetch + protobuf decode + normalizers.
+- `src/metra/bluesky.js` — `loginMetra` + `loginMetraAlerts`.
+- `src/metra/metraAlerts.js` — alert significance gate + post/resolution text.
+- `src/metra/speedmap.js` — corridor builder + DB-based speed sampling.
+- `src/map/metra/speedmap.js` — Metra-colored speedmap renderer.
 - `src/metra/data/{metraLines,metraStations}.json` — generated geometry (committed).
 - `scripts/fetch-metra-gtfs.js` — schedule index + geometry builder.
 - `scripts/observeMetra.js` — live position/trip-update poller.
+- `bin/metra/alerts.js` — alert republish + resolution (cron).
+- `bin/metra/speedmap.js` — speedmap render + post (cron).
 - `src/shared/{history,observations}.js` — `metra_trip_updates`, `trip_id`, record/read helpers.
-- `test/metra/metra.test.js` — unit tests for the pure helpers/normalizers.
+- `test/metra/metra.test.js` — unit tests for the pure helpers/normalizers/gates.

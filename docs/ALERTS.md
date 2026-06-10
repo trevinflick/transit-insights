@@ -8,6 +8,8 @@ The bot's alerts account posts about CTA service problems from three sources:
 
 All three go to the same dedicated alerts account, so followers see a single feed combining "what CTA says" and "what the bot can see for itself."
 
+> **Metra** is handled separately. Metra publishes a native **GTFS-realtime alerts feed**, so its republish path (`src/metra/metraAlerts.js` + `bin/metra/alerts.js`) parses structured alerts rather than CTA's XML, gates on header keywords (Metra sets `effect = UNKNOWN_EFFECT` on nearly everything), and posts to a **dedicated Metra alerts account** (`loginMetraAlerts`) rather than this shared CTA account. See `docs/METRA.md`.
+
 ## The plain-English version
 
 ### Republishing CTA alerts
