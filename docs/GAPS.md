@@ -2,6 +2,8 @@
 
 How the bot finds long stretches of route with no vehicles in service — the rider experience of "the schedule says every 10 minutes, but I've been waiting 30."
 
+> **Metra's analog of a gap is a delay.** Commuter rail runs a clockface timetable, not headways, so the rider-facing number isn't "X× the scheduled gap" — it's "my specific train is N minutes late." Metra binds each scheduled `trip_id` to a predicted arrival, so the bot computes `delay = predicted − scheduled` directly (Metra's feed delay field is always 0, so it's derived from predicted times). See `docs/METRA.md` (Phase 3 — delays); trains ≥ 15 min late surface in the hourly per-line rollup.
+
 ## What a "gap" means
 
 The CTA publishes scheduled headways: how often vehicles should arrive on each route. A **gap** is when the actual distance between two consecutive vehicles is large enough — relative to that schedule — that riders in between are waiting much longer than promised.

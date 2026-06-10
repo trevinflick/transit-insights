@@ -6,9 +6,9 @@ posts we publish for the CTA (cancellations, delays), plus a public dashboard on
 chicagotransitalerts.app.
 
 > **Status:** Phase 0 (ingestion + schedule index + geometry) is built and documented
-> below, along with Phase 1 (alert republish + speedmap) and Phase 2 (cancellations).
-> Delays and the frontend are still to come — see `plan-6-9-26.md` for the phased plan
-> and `research_6_9_2026_metra.md` (repo root) for the design rationale.
+> below, along with Phase 1 (alert republish + speedmap), Phase 2 (cancellations), and
+> Phase 3 (delays). The frontend is still to come — see `plan-6-9-26.md` for the phased
+> plan and `research_6_9_2026_metra.md` (repo root) for the design rationale.
 
 ## Why Metra is different from the CTA side
 
@@ -232,10 +232,32 @@ is essential — see `getMetraCancelledTripIds`).
 > which case the inferred layer is what catches it. Worth confirming the CANCELED
 > encoding against a live one.
 
+## Phase 3 — delays (built)
+
+The Metra analog of CTA "gaps" — but on a clockface timetable the rider-facing number
+isn't a headway ratio, it's "how late is my train": `delay = predicted − scheduled
+arrival`. `src/metra/delays.js`.
+
+**Metra's feed delay field is always 0** (verified 2026-06-09 — 36k updates, all zero),
+so we can't read delay off the feed. But it *does* publish concrete predicted arrival
+times, so we compute the delay ourselves: each running trip's latest predicted arrival
+per stop minus that stop's scheduled arrival (resolved from the static index, trip
+matched suffix-agnostically via `tripKey`, stop by id, service date → midnight). The
+trip's worst stop is its representative lateness. observeMetra already records the
+predictions every tick, so this works over recorded data — no extra polling.
+
+**Folded into the hourly rollup** (`bin/metra/cancellations.js`, the same job as
+cancellations — now a combined "Metra service · last hour" digest). Trains ≥ 15 min late
+are recorded to `disruption_events` (`source='delay'`, `posted=0`, website-data-first,
+deduped per `trip_id`+`serviceDate`) and surfaced as a per-line line:
+`🐌 15+ min late: BNSF 3 · Union Pacific West 1`. The 15-min threshold
+(`DELAY_THRESHOLD_SEC`) sits well above Metra's < 6-min on-time bar so the rollup stays
+quiet on normal days; calibrate against a shadow week. The raw per-stop delay for the
+full service-performance picture lives in `metra_trip_updates`; the rollup records only
+the notable (≥ threshold) ones as incidents.
+
 ## Forthcoming phases (see `plan-6-9-26.md`)
 
-- **Phase 3** — delays (record every train's delay for the website; surface systemic
-  per-line delays in the rollup).
 - **Phase 4** — frontend: Metra incidents + per-line performance, behind a CTA↔Metra
   agency filter.
 
@@ -248,8 +270,9 @@ is essential — see `getMetraCancelledTripIds`).
 - `src/metra/speedmap.js` — corridor builder + DB-based speed sampling.
 - `src/map/metra/speedmap.js` — Metra-colored speedmap renderer.
 - `src/metra/cancellations.js` — confirmed + inferred cancellation detector + feed-health guard.
-- `src/metra/schedule.js` — service-day resolution + scheduled-departure lookup.
-- `bin/metra/cancellations.js` — cancellation detection + hourly rollup (cron).
+- `src/metra/delays.js` — delay = predicted − scheduled; threshold filter.
+- `src/metra/schedule.js` — service-day resolution + scheduled-departure lookup + `tripKey`.
+- `bin/metra/cancellations.js` — combined cancellation + delay hourly rollup (cron).
 - `src/metra/data/{metraLines,metraStations}.json` — generated geometry (committed).
 - `scripts/fetch-metra-gtfs.js` — schedule index + geometry builder.
 - `scripts/observeMetra.js` — live position/trip-update poller.

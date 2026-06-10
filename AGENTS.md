@@ -116,9 +116,16 @@ Brief list; deeper rationale in the linked deep-dives.
   (`posted=0`, website-data-first) and posted only as an hourly per-line rollup
   (`bin/metra/cancellations.js`), with NO per-incident thread/clear machinery —
   don't add one. Dedup is keyed on `trip_id` + `serviceDate`
-  (`getMetraCancelledTripIds`); the same `trip_id` repeats every weekday, so
+  (`getMetraRecordedTripIds`); the same `trip_id` repeats every weekday, so
   dropping the date scope would suppress today's cancellation because last
   week's was recorded.
+- **Metra trip_id suffix mismatch + delay field is always 0.** The realtime feed
+  and static index agree on route+run+version but DIFFER in the trailing service
+  suffix (`_A` static vs `_B` realtime) — any static↔realtime trip_id match MUST
+  go through `tripKey()` (`src/metra/schedule.js`), or every scheduled train reads
+  as unobserved (a 47-FP flood, 2026-06-09). And Metra sends `StopTimeEvent.delay
+  = 0` on every update, so delay is computed as `predicted_arr − scheduled`
+  (`src/metra/delays.js`), never read off the feed.
 
 ### Held-train + multi-signal correlation (post-2026-05-03)
 
@@ -161,7 +168,7 @@ Four cases (pulse-first/CTA-first/pulse-only/CTA-only) detailed in
 | Metra API / feed decode | `src/metra/api.js` (GTFS-rt protobuf), `scripts/observeMetra.js` |
 | Metra schedule index + line/station geometry | `scripts/fetch-metra-gtfs.js`, `src/metra/data/*` |
 | Metra line metadata | `src/metra/lines.js` |
-| Metra cancellations (confirmed + inferred) | `src/metra/cancellations.js`, `bin/metra/cancellations.js`, `src/metra/schedule.js` |
+| Metra cancellations + delays (hourly rollup) | `src/metra/{cancellations,delays}.js`, `bin/metra/cancellations.js`, `src/metra/schedule.js` |
 | Metra alerts / speedmap | `src/metra/{metraAlerts,speedmap}.js`, `bin/metra/{alerts,speedmap}.js` |
 | Bunching / Gap / Ghost detection | `src/{bus,train}/{bunching,gaps,ghosts}.js` |
 | Pulse | `src/{bus,train}/pulse.js` + `bin/{bus,train}/pulse.js` |
