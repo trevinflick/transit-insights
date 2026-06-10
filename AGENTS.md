@@ -170,6 +170,7 @@ Four cases (pulse-first/CTA-first/pulse-only/CTA-only) detailed in
 | Metra line metadata | `src/metra/lines.js` |
 | Metra cancellations + delays (hourly rollup) | `src/metra/{cancellations,delays}.js`, `bin/metra/cancellations.js`, `src/metra/schedule.js` |
 | Metra alerts / speedmap | `src/metra/{metraAlerts,speedmap}.js`, `bin/metra/{alerts,speedmap}.js` |
+| Metra recap (weekly/monthly on-time %) | `src/metra/recap.js`, `bin/metra/recap.js`, `src/map/metra/recapChart.js` |
 | Bunching / Gap / Ghost detection | `src/{bus,train}/{bunching,gaps,ghosts}.js` |
 | Pulse | `src/{bus,train}/pulse.js` + `bin/{bus,train}/pulse.js` |
 | Speedmap | `src/{bus,train}/speedmap.js` |

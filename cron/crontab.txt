@@ -124,6 +124,11 @@ R=/path/to/cta-insights/bin/cron-run.sh
 25      10 *  *  0   $R train-recap      bin/train/recap.js --window=week
 30      10 1  *  *   $R bus-recap        bin/bus/recap.js   --window=month
 35      10 1  *  *   $R train-recap      bin/train/recap.js --window=month
+# metra-recap posts a per-line on-time reliability chart to @metrainsights
+# (loginMetra). On its own minutes (:40 weekly, :50 monthly) so it never shares a
+# wall minute with bus-/train-recap; the account is Metra-only regardless.
+40      10 *  *  0   $R metra-recap      bin/metra/recap.js --window=week
+50      10 1  *  *   $R metra-recap      bin/metra/recap.js --window=month
 
 # --- Health audits ---
 */30    *  *  *  *   $R audit-alerts     bin/audit-alerts.js

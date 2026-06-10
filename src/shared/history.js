@@ -995,6 +995,28 @@ function getMetraRecordedTripIds(serviceDate, sources = ['cancellation', 'cancel
   return new Set(rows.map((r) => r.tripId).filter(Boolean));
 }
 
+// All Metra disruption_events in [since, until) — the recap substrate. Returns
+// rows with the evidence JSON parsed (delayMin/headsign/scheduledDepLabel/…). The
+// 90-day rolloff on disruption_events means this works for both the weekly and
+// the monthly recap window (unlike metra_trip_updates, which rolls off at 7 days).
+function getMetraDisruptions(since, until) {
+  const rows = db()
+    .prepare(`
+    SELECT ts, line, source, evidence FROM disruption_events
+    WHERE kind = 'metra' AND ts >= ? AND ts < ?
+  `)
+    .all(since, until);
+  return rows.map((r) => {
+    let evidence = null;
+    try {
+      evidence = r.evidence ? JSON.parse(r.evidence) : null;
+    } catch (_e) {
+      evidence = null;
+    }
+    return { ts: r.ts, line: r.line, source: r.source, evidence };
+  });
+}
+
 function getPulseState(line, direction) {
   return (
     db()
@@ -1752,6 +1774,7 @@ module.exports = {
   ALERT_CLEAR_TICKS,
   recordDisruption,
   getMetraRecordedTripIds,
+  getMetraDisruptions,
   getRecentPulsePost,
   getRecentPulsePostsAll,
   hasObservedClearForPulse,

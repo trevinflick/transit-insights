@@ -256,6 +256,45 @@ quiet on normal days; calibrate against a shadow week. The raw per-stop delay fo
 full service-performance picture lives in `metra_trip_updates`; the rollup records only
 the notable (≥ threshold) ones as incidents.
 
+## Phase 5 — recap (built)
+
+The weekly/monthly performance digest, the Metra analog of the CTA bus/train recaps.
+`src/metra/recap.js` (pure) + `bin/metra/recap.js` + `src/map/metra/recapChart.js`,
+posted to **@metrainsights** (`loginMetra`, the analytics account — not the alerts one).
+
+Because Metra is timetabled, the rider-facing number is schedule adherence:
+
+```
+reliability = (scheduled − disrupted) / scheduled
+disrupted   = cancelled (confirmed or inferred) + ran 15+ min late
+```
+
+Both numerator inputs are exactly the events Phase 2/3 already record to
+`disruption_events` (`kind='metra'`), which has a **90-day rolloff** — so this works for
+the weekly *and* the monthly window (unlike `metra_trip_updates`, which rolls off at 7
+days and so can't back a monthly on-time number). The scheduled-trip **denominator** is
+counted from the static GTFS index: for each service day in the window,
+`activeServiceIds` resolves which `service_id`s run, and we count the trips on them per
+line (`scheduledCountsByLine` in the bin, stepping 12 h with a date-string dedup so a
+DST-short day is never skipped nor a DST-long day double-counted). The current timetable
+is used as the baseline — Metra schedules change rarely, so it's a sound denominator for
+a recent week/month.
+
+The post is a per-line reliability **chart** (least-reliable on top) with a short text
+summary (systemwide on-time %, scheduled-trip count, the least-reliable lines, total
+cancellations, and the single worst delay). The chart axis **zooms** to a clean 5 % floor
+at or below the worst line (`axisFloor`) because Metra reliability clusters in the
+90–99 % band — a literal 0–100 % axis would render every bar nearly full; the exact
+percentage is printed at the end of each bar so the number is always authoritative and
+the floor is named in the subtitle so the zoom is never misleading.
+
+This is **descriptive data, not a verdict** — we report the percentage and the counts,
+never a letter grade (the killed CTA A–F reliability grade is the precedent).
+
+The window math (`rangeForWindow`) and the dry-run/posting plumbing are the shared recap
+helpers; only the metric and the renderer are Metra-specific. Cadence: weekly (Sun) +
+monthly (1st), mirroring bus-/train-recap — see `cron/crontab.txt`.
+
 ## Forthcoming phases (see `plan-6-9-26.md`)
 
 - **Phase 4** — frontend: Metra incidents + per-line performance, behind a CTA↔Metra
@@ -273,6 +312,9 @@ the notable (≥ threshold) ones as incidents.
 - `src/metra/delays.js` — delay = predicted − scheduled; threshold filter.
 - `src/metra/schedule.js` — service-day resolution + scheduled-departure lookup + `tripKey`.
 - `bin/metra/cancellations.js` — combined cancellation + delay hourly rollup (cron).
+- `src/metra/recap.js` — pure recap aggregation (reliability %, per-line, post/alt text).
+- `src/map/metra/recapChart.js` — per-line reliability bar chart (zoomed axis).
+- `bin/metra/recap.js` — weekly/monthly recap render + post to `loginMetra` (cron).
 - `src/metra/data/{metraLines,metraStations}.json` — generated geometry (committed).
 - `scripts/fetch-metra-gtfs.js` — schedule index + geometry builder.
 - `scripts/observeMetra.js` — live position/trip-update poller.

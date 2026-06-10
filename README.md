@@ -32,7 +32,9 @@ This README is written for operators running their own copy. If you just want to
 Commuter-rail support is being added in phases (see `docs/METRA.md` and the root `plan-6-9-26.md`). Metra is a timetabled railroad, so its detectors read GTFS-realtime schedule adherence directly rather than reconstructing it statistically. Live so far:
 - **Alerts** — republishes Metra's GTFS-realtime service alerts (cancellations, delays, suspensions) to `@metraalertinsights`, filtered to drop ADA/construction/marketing notices, with a threaded resolved reply when the alert clears.
 - **Speedmap** — a Metra line color-coded by observed train speed along the corridor, two ribbons by direction, posted to `@metrainsights`.
-- **Coming next** — cancellation detection (Metra-confirmed + bot-inferred) and delay tracking, posted as an hourly per-line rollup, plus the chicagotransitalerts.app frontend.
+- **Cancellations + delays** — Metra-confirmed and bot-inferred cancellations, plus trains running 15+ min late, recorded to the DB and posted as a combined hourly per-line rollup to `@metraalertinsights` (silent when there's nothing).
+- **Recap** — a weekly/monthly per-line on-time reliability chart to `@metrainsights`: `reliability = (scheduled − cancelled − 15-min-late) / scheduled`, with the scheduled-trip denominator counted from the GTFS timetable.
+- **Coming next** — the chicagotransitalerts.app frontend (agency filter, Metra line/station pages, maps).
 
 ### Alerts (`@ctaalertinsights`)
 - **Republished CTA alerts** — significant service alerts on tracked routes, filtered to drop the noisy "major" ones (single elevator out, block-party reroutes, etc.). Each post gets a threaded `✅ cleared` reply once CTA marks it resolved.
