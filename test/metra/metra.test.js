@@ -408,11 +408,37 @@ test('tally formats per-line counts sorted by count desc', () => {
   assert.strictEqual(tally(events), 'BNSF 2 · Union Pacific North 1');
 });
 
-test('buildRollupText shows confirmed counts and a hedged inferred line', () => {
-  const text = buildRollupText([{ route: 'BNSF' }], [{ route: 'UP-W' }]);
-  assert.match(text, /Metra cancellations/);
-  assert.match(text, /BNSF 1/);
+test('buildRollupText shows cancellation + inferred + delay lines', () => {
+  const text = buildRollupText([{ route: 'BNSF' }], [{ route: 'UP-W' }], [{ route: 'RI' }]);
+  assert.match(text, /Metra service/);
+  assert.match(text, /Cancelled: BNSF 1/);
   assert.match(text, /unconfirmed/);
+  assert.match(text, /15\+ min late: Rock Island 1/);
+});
+
+test('tally caps long lists so the post stays under the limit', () => {
+  const events = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'].map((r) => ({ route: r }));
+  const text = tally(events, 8);
+  assert.match(text, /\+2 more/);
+});
+
+// --- delays detector ---
+
+test('significantDelays keeps trains at/over the threshold and sorts worst-first', () => {
+  const { significantDelays, DELAY_THRESHOLD_SEC } = require('../../src/metra/delays');
+  const rows = [
+    { tripId: 'A', route: 'BNSF', maxDelay: 5 * 60 }, // under threshold → dropped
+    { tripId: 'B', route: 'UP-N', maxDelay: 18 * 60 },
+    { tripId: 'C', route: 'RI', maxDelay: 32 * 60 },
+    { tripId: 'D', route: 'ME', maxDelay: null }, // no data → dropped
+  ];
+  const out = significantDelays(rows, DELAY_THRESHOLD_SEC);
+  assert.deepStrictEqual(
+    out.map((d) => d.tripId),
+    ['C', 'B'],
+  );
+  assert.strictEqual(out[0].delayMin, 32);
+  assert.strictEqual(out[0].source, 'delay');
 });
 
 test('activeServiceIds applies day-of-week + calendar_dates exceptions', () => {

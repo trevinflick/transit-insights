@@ -201,6 +201,21 @@ function getMetraLivePredictionTripIds(sinceTs) {
   return new Set(rows.map((r) => r.trip_id));
 }
 
+// Per-trip worst delay (seconds) over the window — the substrate for delay
+// detection. delay_sec is the GTFS-rt StopTimeEvent delay captured each tick, so
+// MAX across the window is how late each train got this hour. Route comes along
+// for the per-line tally; trips with no delay sample are excluded.
+function getMetraTripMaxDelays(sinceTs) {
+  return getDb()
+    .prepare(`
+    SELECT trip_id AS tripId, route, MAX(delay_sec) AS maxDelay
+    FROM metra_trip_updates
+    WHERE ts >= ? AND trip_id IS NOT NULL AND delay_sec IS NOT NULL
+    GROUP BY trip_id, route
+  `)
+    .all(sinceTs);
+}
+
 // Distinct Metra snapshot timestamps since `sinceTs` (from positions), for the
 // feed-health guard — gaps here mean the feed/ingestion stalled.
 function getMetraSnapshotTimestamps(sinceTs) {
@@ -411,6 +426,7 @@ module.exports = {
   getMetraCanceledTrips,
   getMetraObservedTripIds,
   getMetraLivePredictionTripIds,
+  getMetraTripMaxDelays,
   getMetraSnapshotTimestamps,
   getBusObservations,
   getLastBusObservationTs,

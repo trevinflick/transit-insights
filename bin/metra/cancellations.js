@@ -1,19 +1,23 @@
 #!/usr/bin/env node
-// Metra cancellation detection + hourly rollup. The flagship Phase 2 job.
+// Metra hourly service rollup — cancellations (Phase 2) + delays (Phase 3). The
+// cron entry is named metra-cancellations for historical reasons; it now posts a
+// single combined digest.
 //
-// Posting model (decided — see plan-6-9-26.md §4.1c): cancellations are NOT
-// posted per-trip in real time. Instead, every cancellation (confirmed +
-// inferred) is recorded to disruption_events as website-data-first (posted=0),
-// and this job — run hourly, like the CTA ghost rollups — posts ONE digest of
-// the per-line counts seen in the last hour to the Metra alerts account. Silent
-// when there's nothing. There is deliberately no per-incident thread/clear
-// machinery: the post is a fire-and-forget summary; the website is the full record.
+// Posting model (decided — see plan-6-9-26.md §4.1c): service issues are NOT
+// posted per-trip in real time. Every cancellation and significant delay is
+// recorded to disruption_events as website-data-first (posted=0), and this job —
+// run hourly, like the CTA ghost rollups — posts ONE digest of the per-line
+// counts seen in the last hour to the Metra alerts account. Silent when there's
+// nothing. There is deliberately no per-incident thread/clear machinery: the post
+// is a fire-and-forget summary; the website is the full record.
 //
-// Two detection layers (src/metra/cancellations.js):
-//   - confirmed  — Metra flagged the trip CANCELED. Authoritative.
-//   - inferred   — a scheduled trip departed with no train ever seen and no flag.
-//     Gated behind a feed-health check so a feed stall isn't read as mass
-//     cancellation, and framed as unconfirmed in the post.
+// Three signals:
+//   - confirmed cancellation — Metra flagged the trip CANCELED. Authoritative.
+//   - inferred cancellation  — a scheduled trip departed with no train ever seen
+//     and no flag. Feed-health-gated; framed as unconfirmed.
+//   - delay — a running train that hit the delay threshold (15+ min) this hour;
+//     delay = predicted − scheduled, already captured per tick in
+//     metra_trip_updates. The Metra analog of CTA gaps.
 
 require('../../src/shared/env');
 
@@ -22,6 +26,7 @@ const Fs = require('node:fs');
 
 const { setup, runBin } = require('../../src/shared/runBin');
 const { detectCancellations, isFeedHealthy } = require('../../src/metra/cancellations');
+const { significantDelays, DELAY_THRESHOLD_SEC } = require('../../src/metra/delays');
 const {
   scheduledDeparturesInWindow,
   chicagoDateStr,
@@ -34,9 +39,10 @@ const {
   getMetraCanceledTrips,
   getMetraObservedTripIds,
   getMetraLivePredictionTripIds,
+  getMetraTripMaxDelays,
   getMetraSnapshotTimestamps,
 } = require('../../src/shared/observations');
-const { recordDisruption, getMetraCancelledTripIds } = require('../../src/shared/history');
+const { recordDisruption, getMetraRecordedTripIds } = require('../../src/shared/history');
 const { formatTimeCT } = require('../../src/shared/format');
 
 const DRY_RUN = process.env.METRA_DRY_RUN === '1' || process.argv.includes('--dry-run');
@@ -61,54 +67,58 @@ function depLabel(ms) {
 }
 
 // Build the evidence + segment fields for a disruption_events row from an
-// enriched trip record. Resolves stop ids to names via the index.
-function toDisruption(trip, index, source) {
+// enriched event record (a cancellation or a delay — its `source` decides the
+// evidence shape). Resolves stop ids to names via the index.
+function toDisruption(event, index) {
   const stops = index?.stops || {};
-  const origin = trip.originStopId ? stops[trip.originStopId]?.name || null : null;
-  const dest = trip.headsign || (trip.destStopId ? stops[trip.destStopId]?.name || null : null);
+  const origin = event.originStopId ? stops[event.originStopId]?.name || null : null;
+  const dest = event.headsign || (event.destStopId ? stops[event.destStopId]?.name || null : null);
+  const evidence = {
+    tripId: event.tripId,
+    serviceDate: event.serviceDate,
+    scheduledDepTs: event.scheduledDepMs ?? null,
+    scheduledDepLabel: depLabel(event.scheduledDepMs),
+    headsign: event.headsign ?? null,
+    origin,
+  };
+  if (event.source === 'delay') {
+    evidence.delaySec = event.delaySec ?? null;
+    evidence.delayMin = event.delayMin ?? null;
+  } else {
+    evidence.inferred = event.source === 'cancellation-inferred';
+  }
   return {
     kind: 'metra',
-    line: trip.route,
-    direction: trip.directionId != null ? String(trip.directionId) : null,
+    line: event.route,
+    direction: event.directionId != null ? String(event.directionId) : null,
     fromStation: origin,
     toStation: dest,
-    source,
+    source: event.source,
     posted: 0,
-    evidence: {
-      tripId: trip.tripId,
-      serviceDate: trip.serviceDate,
-      scheduledDepTs: trip.scheduledDepMs ?? null,
-      scheduledDepLabel: depLabel(trip.scheduledDepMs),
-      headsign: trip.headsign ?? null,
-      origin,
-      inferred: source === 'cancellation-inferred',
-    },
+    evidence,
   };
 }
 
-// "BNSF 2 · UP-N 1" sorted by count desc then line order.
-function tally(events) {
+// "BNSF 2 · UP-N 1" sorted by count desc then line order, capped so a system-wide
+// bad hour can't blow the 300-grapheme post limit.
+function tally(events, maxItems = 8) {
   const counts = new Map();
   for (const e of events) counts.set(e.route, (counts.get(e.route) || 0) + 1);
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([route, n]) => `${LINE_NAMES[route] || route} ${n}`)
-    .join(' · ');
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = sorted.slice(0, maxItems).map(([route, n]) => `${LINE_NAMES[route] || route} ${n}`);
+  if (sorted.length > maxItems) shown.push(`+${sorted.length - maxItems} more`);
+  return shown.join(' · ');
 }
 
-function buildRollupText(confirmed, inferred) {
-  const lines = ['🚆 Metra cancellations · last hour', ''];
-  if (confirmed.length > 0) {
-    lines.push(tally(confirmed));
-  } else {
-    lines.push('No confirmed cancellations.');
-  }
+// One hourly digest covering cancellations + delays. Each non-empty category gets
+// one line; the bin only posts when at least one category has events.
+function buildRollupText(confirmed, inferred, delays) {
+  const lines = ['🚆 Metra service · last hour', ''];
+  if (confirmed.length > 0) lines.push(`❌ Cancelled: ${tally(confirmed)}`);
   if (inferred.length > 0) {
-    lines.push('');
-    lines.push(
-      `⚠️ ${inferred.length} more scheduled ${inferred.length === 1 ? 'train' : 'trains'} not seen running (unconfirmed): ${tally(inferred)}`,
-    );
+    lines.push(`⚠️ Scheduled but not seen running (unconfirmed): ${tally(inferred)}`);
   }
+  if (delays.length > 0) lines.push(`🐌 15+ min late: ${tally(delays)}`);
   lines.push('');
   lines.push('Per Metra realtime data.');
   return lines.join('\n');
@@ -148,21 +158,22 @@ async function main() {
     now + 2 * 60 * 60 * 1000,
     now,
   );
-  const tripById = new Map(allTrips.map((t) => [t.tripId, t]));
+  // Keyed by the suffix-agnostic trip key so realtime ids (which carry a
+  // different service suffix than the static index) resolve to their schedule.
+  const tripByKey = new Map(allTrips.map((t) => [tripKey(t.tripId), t]));
   const candidateTrips = allTrips.filter(
     (t) => t.scheduledDepMs >= now - ROLLUP_WINDOW_MS - GRACE_MS,
   );
+  // Merge a raw realtime event ({tripId, route, …}) with its static schedule
+  // record (headsign, scheduled departure, origin/dest, direction) via the trip
+  // key; the raw fields (e.g. delaySec) win. Falls back to the raw event alone.
+  const enrich = (raw) => {
+    const base = tripByKey.get(tripKey(raw.tripId));
+    return base ? { ...base, ...raw } : { serviceDate: chicagoDateStr(now), ...raw };
+  };
 
   // Confirmed cancellations Metra flagged in the window, enriched from the index.
-  const canceledRaw = getMetraCanceledTrips(now - ROLLUP_WINDOW_MS);
-  const canceledTrips = canceledRaw.map(
-    (c) =>
-      tripById.get(c.tripId) || {
-        tripId: c.tripId,
-        route: c.route,
-        serviceDate: chicagoDateStr(now),
-      },
-  );
+  const canceledTrips = getMetraCanceledTrips(now - ROLLUP_WINDOW_MS).map(enrich);
 
   // Context sets, normalized into the suffix-agnostic key space (the live feed
   // tags trips with a different service suffix than the static index — see
@@ -188,47 +199,65 @@ async function main() {
     keyOf: tripKey,
   });
 
-  // Dedup against what's already been recorded this/yesterday's service date so a
-  // cancellation logged on an earlier hourly run isn't recorded or counted twice.
-  const recorded = new Set(); // normalized keys, so the suffix difference doesn't defeat dedup
-  for (const d of new Set(candidateTrips.map((t) => t.serviceDate).concat(chicagoDateStr(now)))) {
-    for (const id of getMetraCancelledTripIds(d)) recorded.add(tripKey(id));
-  }
-  const newConfirmed = confirmed.filter((t) => !recorded.has(tripKey(t.tripId)));
-  const newInferred = inferred.filter((t) => !recorded.has(tripKey(t.tripId)));
+  // Delays: trains that hit 15+ min late this hour (worst delay per trip), enriched
+  // with schedule info. A delayed train is running (it has predictions), so this
+  // set is disjoint from cancellations.
+  const delaysDetected = significantDelays(getMetraTripMaxDelays(now - ROLLUP_WINDOW_MS));
+
+  // Dedup against what's already been recorded for the relevant service dates, so
+  // an event logged on an earlier hourly run isn't recorded or counted twice.
+  // Cancellations and delays dedup against their own source buckets.
+  const serviceDates = new Set(
+    candidateTrips.map((t) => t.serviceDate).concat(chicagoDateStr(now)),
+  );
+  const recordedKeys = (sources) => {
+    const set = new Set();
+    for (const d of serviceDates)
+      for (const id of getMetraRecordedTripIds(d, sources)) set.add(tripKey(id));
+    return set;
+  };
+  const recordedCx = recordedKeys(['cancellation', 'cancellation-inferred']);
+  const recordedDelay = recordedKeys(['delay']);
+  const newConfirmed = confirmed.filter((t) => !recordedCx.has(tripKey(t.tripId)));
+  const newInferred = inferred.filter((t) => !recordedCx.has(tripKey(t.tripId)));
+  const newDelays = delaysDetected.filter((d) => !recordedDelay.has(tripKey(d.tripId))).map(enrich);
 
   console.log(
-    `metra cancellations: ${newConfirmed.length} new confirmed, ${newInferred.length} new inferred (feed ${feedHealthy ? 'healthy' : 'STALE'})`,
+    `metra service rollup: ${newConfirmed.length} confirmed, ${newInferred.length} inferred, ${newDelays.length} delayed (≥${DELAY_THRESHOLD_SEC / 60}min) (feed ${feedHealthy ? 'healthy' : 'STALE'})`,
   );
 
+  const all = [...newConfirmed, ...newInferred, ...newDelays];
+
   if (DRY_RUN) {
-    for (const t of [...newConfirmed, ...newInferred]) {
+    for (const t of all) {
+      const detail =
+        t.source === 'delay'
+          ? `~${t.delayMin}min late`
+          : `dep ${depLabel(t.scheduledDepMs) || '?'}`;
       console.log(
-        `  [${t.source}] ${lineLabel(t.route)} ${t.tripId} dep ${depLabel(t.scheduledDepMs) || '?'} → ${t.headsign || '?'}`,
+        `  [${t.source}] ${lineLabel(t.route)} ${t.tripId} ${detail} → ${t.headsign || '?'}`,
       );
     }
     const text =
-      newConfirmed.length + newInferred.length > 0
-        ? buildRollupText(newConfirmed, newInferred)
+      all.length > 0
+        ? buildRollupText(newConfirmed, newInferred, newDelays)
         : '(silent — nothing this hour)';
     console.log(`\n--- DRY RUN rollup (DB write skipped) ---\n${text}`);
     return;
   }
 
-  // Record every new cancellation (website-data-first), then post the digest.
-  for (const t of [...newConfirmed, ...newInferred]) {
-    recordDisruption(toDisruption(t, index, t.source), now);
-  }
+  // Record every new event (website-data-first), then post the digest.
+  for (const t of all) recordDisruption(toDisruption(t, index), now);
 
-  if (newConfirmed.length === 0 && newInferred.length === 0) {
-    console.log('metra cancellations: nothing this hour — staying silent');
+  if (all.length === 0) {
+    console.log('metra service rollup: nothing this hour — staying silent');
     return;
   }
 
-  const text = buildRollupText(newConfirmed, newInferred);
+  const text = buildRollupText(newConfirmed, newInferred, newDelays);
   const agent = await loginMetraAlerts();
   const result = await postText(agent, text);
-  console.log(`Posted metra cancellation rollup: ${result.url}`);
+  console.log(`Posted metra service rollup: ${result.url}`);
 }
 
 if (require.main === module) {
