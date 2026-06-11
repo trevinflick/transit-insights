@@ -65,6 +65,30 @@ function metraTrainNumberFromTripId(tripId) {
   return digits || null;
 }
 
+function officialMetraStatusFromText(alert) {
+  if (alert.kind !== 'metra') return null;
+  const text = [alert.headline, alert.short_description].filter(Boolean).join(' \n ');
+  if (!text) return null;
+  if (/\bwill\s+not\s+operate\b|\bcancell?ed\b|\bannull?ed\b|\bnot\s+running\b/i.test(text)) {
+    return 'cancellation';
+  }
+  if (
+    /\bdelayed?\b|\b\d{1,3}\s*(?:\+|\s*or\s+more)?\s*minutes?\s+(?:late|behind|delay)/i.test(text)
+  ) {
+    return 'delay';
+  }
+  return null;
+}
+
+function metraTrainNumberFromAlertText(alert) {
+  const text = [alert.headline, alert.short_description].filter(Boolean).join(' \n ');
+  if (!text) return null;
+  const trainMatch = /\btrain\s+#?(\d{1,4})\b/i.exec(text);
+  if (trainMatch) return trainMatch[1];
+  const shortMatch = /\b[A-Z]{2,5}\s*#(\d{1,4})\b/.exec(text);
+  return shortMatch ? shortMatch[1] : null;
+}
+
 // Parse L train line names out of CTA alert text. CTA edits a live alert as
 // the situation evolves and may drop lines from the headline once their
 // service recovers (e.g. "Brown, Red and Purple Line Service Delayed" →
@@ -158,6 +182,13 @@ function metraStatusBlock(alert) {
       deadline_ts: alert.delay_deadline_ts,
       delay_min: alert.delay_min ?? null,
       train_number: alert.delay_train_no ?? null,
+    };
+  }
+  const source = officialMetraStatusFromText(alert);
+  if (source) {
+    return {
+      source,
+      train_number: metraTrainNumberFromAlertText(alert),
     };
   }
   return null;

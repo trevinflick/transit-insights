@@ -108,6 +108,25 @@ test('official Metra delay alerts export a Metra status block', () => {
   });
 });
 
+test('official Metra delay alerts fall back to text classification when not schedule anchored', () => {
+  const incidents = buildIncidents(
+    [
+      alert({
+        kind: 'metra',
+        routes: ['RI'],
+        headline: 'RID #426 Delayed',
+        short_description:
+          'RID train #426, scheduled to arrive LaSalle Street Station at 3:36 PM, is operating 30 to 35 minutes behind schedule due to switch problems.',
+      }),
+    ],
+    [],
+  );
+  assert.deepEqual(incidents[0].metra_status, {
+    source: 'delay',
+    train_number: '426',
+  });
+});
+
 test('official Metra cancellation alerts export cancellation status', () => {
   const incidents = buildIncidents(
     [
