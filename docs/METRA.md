@@ -194,7 +194,7 @@ the **timetable** instead of the feed.
 - **Backfill** — `bin/backfill-metra-cancellations.js` reclassifies metra alert rows
   captured before this shipped (idempotent, `--dry-run` aware), resolving each on its
   own service day and finalizing the past ones.
-- **Export** — `bin/export-web.js` ships a `cta.cancellation` object on the incident
+- **Export** — `bin/export-web.js` ships a top-level `incident.cancellation` object
   (`state`, `scheduled_departure_ts`, `scheduled_arrival_ts`, `train_number`,
   `origin`); the frontend renders the state + window directly. See the data-API
   changelog (cta-alert-history `public/data/CHANGELOG.md`, 2026-06-11).

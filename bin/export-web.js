@@ -126,7 +126,6 @@ function ctaBlock(alert) {
     cta_event_end_ts: alert.cta_event_end_ts ?? null,
     cta_event_start_is_date_only: alert.cta_event_start_is_date_only ?? false,
     cta_event_end_is_date_only: alert.cta_event_end_is_date_only ?? false,
-    cancellation: alert.cancellation ?? null,
   };
   // versions is present on the built alert only when CTA edited it (>1 version).
   if (alert.versions && alert.versions.length > 1) block.versions = alert.versions;
@@ -232,6 +231,11 @@ function buildIncidents(builtAlerts, builtObservations) {
       active,
       sources: matches.length > 0 ? ['cta', 'bot'] : ['cta'],
       cta: ctaBlock(alert),
+      // Schedule-anchored single-train Metra cancellation (null otherwise). Top-
+      // level on the incident — it's a Metra incident fact, not alert-text
+      // metadata, and the `cta` block is a CTA-era misnomer for the official
+      // alert that would misname it for Metra.
+      cancellation: alert.cancellation ?? null,
       observations: matches,
     });
     for (const o of matches) usedObsIds.add(o.id);
