@@ -73,7 +73,9 @@ function officialMetraStatusFromText(alert) {
     return 'cancellation';
   }
   if (
-    /\bdelayed?\b|\b\d{1,3}\s*(?:\+|\s*or\s+more)?\s*minutes?\s+(?:late|behind|delay)/i.test(text)
+    /\bdelay(?:ed|s)?\b|\b\d{1,3}\s*(?:\+|\s*or\s+more)?\s*minutes?\s+(?:late|behind|delay)/i.test(
+      text,
+    )
   ) {
     return 'delay';
   }

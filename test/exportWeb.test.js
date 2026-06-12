@@ -127,6 +127,29 @@ test('official Metra delay alerts fall back to text classification when not sche
   });
 });
 
+test('official Metra delay text classifies the bare word "delay" (no minutes phrase)', () => {
+  // Regression: "Remains Stopped ... Extensive delay anticipated" carries no
+  // "N minutes behind" phrase, so it leans entirely on the word "delay". The
+  // old /\bdelayed?\b/ only matched "delaye"/"delayed", left metra_status null,
+  // and the event rendered without the delayed badge.
+  const incidents = buildIncidents(
+    [
+      alert({
+        kind: 'metra',
+        routes: ['up-n'],
+        headline: 'UPN Train #366- Remains Stopped',
+        short_description:
+          'UPN train #366, scheduled to arrive Ogilvie Transportation Center at 7:50 PM, remains stopped near Zion due to weather related conditions and a tree on the tracks. Extensive delay anticipated.',
+      }),
+    ],
+    [],
+  );
+  assert.deepEqual(incidents[0].metra_status, {
+    source: 'delay',
+    train_number: '366',
+  });
+});
+
 test('official Metra cancellation alerts export cancellation status', () => {
   const incidents = buildIncidents(
     [
