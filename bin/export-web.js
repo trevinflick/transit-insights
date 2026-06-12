@@ -162,6 +162,10 @@ function agencyForKind(kind) {
   return kind === 'metra' ? 'metra' : 'cta';
 }
 
+function officialSourceForKind(kind) {
+  return agencyForKind(kind);
+}
+
 function modeForKind(kind) {
   if (kind === 'metra') return 'commuter_rail';
   return kind;
@@ -386,7 +390,10 @@ function buildIncidents(builtAlerts, builtObservations) {
       agency: agencyForKind(alert.kind),
       mode: modeForKind(alert.kind),
       routes: incidentRoutes,
-      sources: matches.length > 0 ? ['cta', 'bot'] : ['cta'],
+      sources:
+        matches.length > 0
+          ? [officialSourceForKind(alert.kind), 'bot']
+          : [officialSourceForKind(alert.kind)],
       lifecycle: lifecycleBlock({
         firstSeenTs: incidentFirstSeen,
         // While active, don't report a resolution — a paired obs may carry its own

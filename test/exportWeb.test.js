@@ -102,12 +102,38 @@ test('official Metra delay alerts export a Metra status block', () => {
     [],
   );
   assert.deepEqual(incidents[0].routes, ['ri']);
+  assert.deepEqual(incidents[0].sources, ['metra']);
   assert.deepEqual(incidents[0].status, {
     type: 'delay',
     deadline_ts: NOW + 90 * 60_000,
     delay_min: 35,
     train_number: '426',
   });
+});
+
+test('merged Metra official alert and bot detection uses Metra as the official source', () => {
+  const incidents = buildIncidents(
+    [
+      alert({
+        kind: 'metra',
+        routes: ['UP-N'],
+        headline: 'UPN Train #366 Delayed',
+        first_seen_ts: NOW,
+      }),
+    ],
+    [
+      obs({
+        kind: 'metra',
+        line: 'UP-N',
+        ts: NOW + 5 * 60_000,
+        detection_source: 'delay',
+      }),
+    ],
+  );
+  assert.equal(incidents.length, 1);
+  assert.equal(incidents[0].agency, 'metra');
+  assert.equal(incidents[0].mode, 'commuter_rail');
+  assert.deepEqual(incidents[0].sources, ['metra', 'bot']);
 });
 
 test('official Metra delay alerts fall back to text classification when not schedule anchored', () => {
