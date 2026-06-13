@@ -43,9 +43,9 @@ Additional terminal filtering at post time: even if `pdist` looks fine, if the c
 
 ### Schedule adherence — `scheduleDeviationMin` (bus only)
 
-The `Buses:` line tags each clustered bus with its map disc number and, when we can compute it confidently, how late or early it is:
+The `Buses:` line tags each clustered bus with its map disc number (as a keycap emoji, so the position reads as a distinct tag rather than a third number next to the vehicle id and the minutes) and, when we can compute it confidently, how late or early it is:
 
-> Buses: #8700 (1, 12 min late), #8228 (2, 3 min early)
+> Buses: #8700 (1️⃣, 12 min late), #8228 (2️⃣, 3 min early)
 
 Every live bus self-reports the scheduled start of the trip it's running (`getvehicles` `stst` = seconds since midnight, `stsd` = service date). That plus the route identifies the exact GTFS trip — its first-stop departure equals `stst` — so we never have to *guess* which scheduled run a bus belongs to. That matters most here: in a bunch several buses sit at nearly the same place at the same time, so position alone can't tell them apart, but each bus carries its own schedule anchor.
 

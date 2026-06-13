@@ -86,7 +86,7 @@ test('buildPostText lists buses with their map number in increasing order', () =
     ],
   };
   const text = buildPostText(numbered, { direction: 'Southbound' }, { stopName: 'Ashland' });
-  assert.ok(text.includes('Buses: #8015 (1), #8057 (2)'));
+  assert.ok(text.includes('Buses: #8015 (1️⃣), #8057 (2️⃣)'));
 });
 
 test('buildPostText annotates each bus with schedule adherence when provided', () => {
@@ -105,7 +105,7 @@ test('buildPostText annotates each bus with schedule adherence when provided', (
   const text = buildPostText(numbered, { direction: 'Southbound' }, { stopName: 'Ashland' }, [], {
     deviations,
   });
-  assert.ok(text.includes('Buses: #8015 (1, 12 min late), #8057 (2, 2 min early)'));
+  assert.ok(text.includes('Buses: #8015 (1️⃣, 12 min late), #8057 (2️⃣, 2 min early)'));
 });
 
 test('buildPostText keeps the bare number for a bus with no deviation', () => {
@@ -122,7 +122,7 @@ test('buildPostText keeps the bare number for a bus with no deviation', () => {
   const text = buildPostText(numbered, { direction: 'Southbound' }, { stopName: 'Ashland' }, [], {
     deviations,
   });
-  assert.ok(text.includes('#8015 (1, 5 min late)'));
-  assert.ok(text.includes('#8057 (2)'));
-  assert.ok(!text.includes('#8057 (2,'));
+  assert.ok(text.includes('#8015 (1️⃣, 5 min late)'));
+  assert.ok(text.includes('#8057 (2️⃣)'));
+  assert.ok(!text.includes('#8057 (2️⃣,'));
 });

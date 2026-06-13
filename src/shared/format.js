@@ -18,6 +18,16 @@ function elapsedMinutesLabel(totalSec) {
   return m === 1 ? '1 minute' : `${m} minutes`;
 }
 
+// Render a positive integer as keycap-emoji digits (1 → 1️⃣, 13 → 1️⃣3️⃣) so a
+// bus's map-disc position reads as a distinct tag, not just another number next
+// to its vehicle id and late/early minutes.
+function keycapNumber(n) {
+  return String(n)
+    .split('')
+    .map((d) => (d >= '0' && d <= '9' ? `${d}️⃣` : d))
+    .join('');
+}
+
 // Schedule adherence as plain words, no +/- signs (the signs read ambiguously).
 // Positive minutes = behind schedule (late), negative = ahead (early). Rounds to
 // the minute; anything that rounds to 0 reads "on time". Returns null for a null/
@@ -44,5 +54,6 @@ module.exports = {
   formatMinSec,
   elapsedMinutesLabel,
   formatDeviation,
+  keycapNumber,
   formatTimeCT,
 };

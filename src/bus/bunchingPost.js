@@ -6,6 +6,7 @@ const {
   formatMinSec,
   elapsedMinutesLabel,
   formatDeviation,
+  keycapNumber,
 } = require('../shared/format');
 
 function routeTitle(route) {
@@ -28,8 +29,9 @@ function buildPostText(bunch, pattern, stop, callouts = [], opts = {}) {
     .map((v) => ({ label: `#${v.vid}`, n: labels.get(v.vid), dev: deviations?.get(v.vid) }))
     .sort((a, b) => a.n - b.n)
     .map((x) => {
+      const n = keycapNumber(x.n);
       const d = formatDeviation(x.dev);
-      return d ? `${x.label} (${x.n}, ${d})` : `${x.label} (${x.n})`;
+      return d ? `${x.label} (${n}, ${d})` : `${x.label} (${n})`;
     })
     .join(', ');
   const busesLine = vids ? `\n\nBuses: ${vids}` : '';

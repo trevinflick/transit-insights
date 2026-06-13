@@ -11,7 +11,7 @@ const Database = require('better-sqlite3');
 const TMP_DB = Path.join(os.tmpdir(), `cta-sched-test-${process.pid}.sqlite`);
 process.env.GTFS_SCHEDULE_DB_PATH = TMP_DB;
 
-const { formatDeviation } = require('../../src/shared/format');
+const { formatDeviation, keycapNumber } = require('../../src/shared/format');
 const {
   deviationFromStops,
   chicagoSecondsOfDay,
@@ -26,6 +26,12 @@ test('formatDeviation reads as words with no signs', () => {
   assert.equal(formatDeviation(null), null);
   assert.equal(formatDeviation(undefined), null);
   assert.equal(formatDeviation(Number.NaN), null);
+});
+
+test('keycapNumber renders single and multi-digit positions as keycap emoji', () => {
+  assert.equal(keycapNumber(1), '1️⃣');
+  assert.equal(keycapNumber(3), '3️⃣');
+  assert.equal(keycapNumber(13), '1️⃣3️⃣'); // 10+ splits per digit
 });
 
 test('chicagoSecondsOfDay converts a UTC instant to Chicago seconds-of-day', () => {
