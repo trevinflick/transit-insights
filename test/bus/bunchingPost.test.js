@@ -88,3 +88,41 @@ test('buildPostText lists buses with their map number in increasing order', () =
   const text = buildPostText(numbered, { direction: 'Southbound' }, { stopName: 'Ashland' });
   assert.ok(text.includes('Buses: #8015 (1), #8057 (2)'));
 });
+
+test('buildPostText annotates each bus with schedule adherence when provided', () => {
+  const numbered = {
+    route: '9',
+    spanFt: 0,
+    vehicles: [
+      { vid: '8057', pdist: 1000 },
+      { vid: '8015', pdist: 5000 },
+    ],
+  };
+  const deviations = new Map([
+    ['8015', 12.3],
+    ['8057', -2.1],
+  ]);
+  const text = buildPostText(numbered, { direction: 'Southbound' }, { stopName: 'Ashland' }, [], {
+    deviations,
+  });
+  assert.ok(text.includes('Buses: #8015 (1, 12 min late), #8057 (2, 2 min early)'));
+});
+
+test('buildPostText keeps the bare number for a bus with no deviation', () => {
+  const numbered = {
+    route: '9',
+    spanFt: 0,
+    vehicles: [
+      { vid: '8057', pdist: 1000 },
+      { vid: '8015', pdist: 5000 },
+    ],
+  };
+  // 8057 is unplaceable (absent from the map), so it stays a bare number.
+  const deviations = new Map([['8015', 5]]);
+  const text = buildPostText(numbered, { direction: 'Southbound' }, { stopName: 'Ashland' }, [], {
+    deviations,
+  });
+  assert.ok(text.includes('#8015 (1, 5 min late)'));
+  assert.ok(text.includes('#8057 (2)'));
+  assert.ok(!text.includes('#8057 (2,'));
+});

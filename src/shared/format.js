@@ -18,6 +18,17 @@ function elapsedMinutesLabel(totalSec) {
   return m === 1 ? '1 minute' : `${m} minutes`;
 }
 
+// Schedule adherence as plain words, no +/- signs (the signs read ambiguously).
+// Positive minutes = behind schedule (late), negative = ahead (early). Rounds to
+// the minute; anything that rounds to 0 reads "on time". Returns null for a null/
+// non-finite input so callers can simply omit the annotation.
+function formatDeviation(min) {
+  if (min == null || !Number.isFinite(min)) return null;
+  const r = Math.round(min);
+  if (r === 0) return 'on time';
+  return r > 0 ? `${r} min late` : `${-r} min early`;
+}
+
 function formatTimeCT(date) {
   return date.toLocaleTimeString('en-US', {
     hour: 'numeric',
@@ -27,4 +38,11 @@ function formatTimeCT(date) {
   });
 }
 
-module.exports = { formatDistance, formatMinutes, formatMinSec, elapsedMinutesLabel, formatTimeCT };
+module.exports = {
+  formatDistance,
+  formatMinutes,
+  formatMinSec,
+  elapsedMinutesLabel,
+  formatDeviation,
+  formatTimeCT,
+};

@@ -220,7 +220,9 @@ function db() {
       vehicle_ts INTEGER,
       approx INTEGER,
       next_station TEXT,
-      trip_id TEXT
+      trip_id TEXT,
+      sched_start_sec INTEGER,
+      sched_start_date TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_obs_kind_route_ts
       ON observations(kind, route, ts);
@@ -287,6 +289,12 @@ function db() {
     // Metra positions carry a GTFS trip_id (e.g. `BNSF_BN1272_V2_B`) that joins
     // directly to the static schedule index. CTA bus/train rows leave it null.
     ['trip_id', 'TEXT'],
+    // CTA bus schedule anchor (getvehicles `stst`/`stsd`): the trip's scheduled
+    // start as seconds-since-midnight + service date. Persisted so a post built
+    // from the cached snapshot can still resolve schedule adherence. Null for
+    // train/metra rows.
+    ['sched_start_sec', 'INTEGER'],
+    ['sched_start_date', 'TEXT'],
   ]) {
     if (!obsCols.includes(name)) _db.exec(`ALTER TABLE observations ADD COLUMN ${name} ${type}`);
   }

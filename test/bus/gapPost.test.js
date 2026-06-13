@@ -43,6 +43,61 @@ test('buildPostText spells out rider roles with Last seen / Next up', () => {
   assert.ok(!text.includes('Buses:'));
 });
 
+test('buildPostText appends schedule adherence to the flanking buses', () => {
+  const g = { ...gap, leading: { vid: '1934' }, trailing: { vid: '8021' } };
+  const text = buildPostText(g, pattern, stop, [], { leadingDev: 0.2, trailingDev: 14.6 });
+  assert.ok(text.includes('Last seen: #1934 (on time)'));
+  assert.ok(text.includes('Next up: #8021 (15 min late)'));
+});
+
+test('buildPostText leaves a flanking bus bare when its deviation is unknown', () => {
+  const g = { ...gap, leading: { vid: '1934' }, trailing: { vid: '8021' } };
+  const text = buildPostText(g, pattern, stop, [], { leadingDev: null, trailingDev: -3.4 });
+  assert.ok(text.includes('Last seen: #1934 ·')); // no parenthetical
+  assert.ok(!text.includes('#1934 ('));
+  assert.ok(text.includes('Next up: #8021 (3 min early)'));
+});
+
+test('buildPostText explains a big gap with an on-schedule next-up bus', () => {
+  // 28 min gap, 10 min headway, next-up only 4 min late → missing-trips note.
+  const g = {
+    route: '9',
+    gapMin: 28,
+    expectedMin: 10,
+    leading: { vid: '8013' },
+    trailing: { vid: '1443' },
+  };
+  const text = buildPostText(g, pattern, stop, [], { leadingDev: -2, trailingDev: 4 });
+  assert.ok(text.includes('the gap is from trips missing between them'));
+});
+
+test('buildPostText omits the note when a late next-up bus explains the gap', () => {
+  // Same gap, but the next-up bus is itself 22 min late — adherence explains it.
+  const g = {
+    route: '9',
+    gapMin: 28,
+    expectedMin: 10,
+    leading: { vid: '8013' },
+    trailing: { vid: '1443' },
+  };
+  const text = buildPostText(g, pattern, stop, [], { leadingDev: -2, trailingDev: 22 });
+  assert.ok(!text.includes('trips missing between them'));
+  assert.ok(text.includes('Next up: #1443 (22 min late)'));
+});
+
+test('buildPostText omits the note when the gap is near the scheduled headway', () => {
+  // Gap only ~1.5x headway — not enough for a full missing trip; stay quiet.
+  const g = {
+    route: '9',
+    gapMin: 15,
+    expectedMin: 10,
+    leading: { vid: '8013' },
+    trailing: { vid: '1443' },
+  };
+  const text = buildPostText(g, pattern, stop, [], { leadingDev: -2, trailingDev: 3 });
+  assert.ok(!text.includes('trips missing between them'));
+});
+
 test('buildPostText marks the modeled gap as approximate with a tilde', () => {
   assert.ok(buildPostText(gap, pattern, stop).includes('~35 min'));
 });

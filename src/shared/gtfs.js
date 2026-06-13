@@ -1,5 +1,6 @@
 const Path = require('node:path');
 const Fs = require('fs-extra');
+const Database = require('better-sqlite3');
 const { haversineFt } = require('./geo');
 
 const INDEX_PATH = Path.join(__dirname, '..', '..', 'data', 'gtfs', 'index.json');
@@ -518,8 +519,130 @@ function isTrainLoopLine(line) {
   return Object.keys(byDir).length === 1;
 }
 
+// --- Bus schedule adherence (how late/early a specific bus is) ---
+//
+// A live vehicle self-reports the scheduled start of the trip it's running
+// (getvehicles `stst`/`stsd`, surfaced as schedStartSec/schedStartDate). That
+// plus the route uniquely identifies the GTFS trip — its first-stop
+// departure_time equals stst — so we never have to guess which scheduled trip a
+// bus belongs to. This is what makes adherence work even inside a bunch, where
+// several buses sit at the same place at the same time: each carries its own
+// anchor. The per-trip scheduled (stop position → time) curves live in the
+// SQLite schedule built by scripts/fetch-gtfs.js (too large for index.json).
+
+const SCHED_DB_PATH =
+  process.env.GTFS_SCHEDULE_DB_PATH ||
+  Path.join(__dirname, '..', '..', 'data', 'gtfs', 'schedule.sqlite');
+// Equirectangular ft-per-degree, good enough for the few-hundred-foot
+// projection distances we care about (matches geo.js's EARTH_RADIUS_FT).
+const R_FT = 20902231;
+const FT_PER_DEG = (Math.PI / 180) * R_FT;
+// Beyond this from the trip's stop path the bus isn't credibly on this trip
+// (GPS junk, wrong-trip match, off-route deadhead) — we omit rather than guess.
+const MAX_OFFROUTE_FT = 600;
+// Adherence larger than this is almost always a bad match or a service-day
+// wrap (after-midnight trips the daily index doesn't carry); omit instead.
+const MAX_PLAUSIBLE_DEV_MIN = 45;
+
+let _schedDb; // undefined = not tried, null = absent, else Database
+let _schedStmt = null;
+function schedDb() {
+  if (_schedDb !== undefined) return _schedDb;
+  _schedDb = Fs.existsSync(SCHED_DB_PATH)
+    ? new Database(SCHED_DB_PATH, { readonly: true, fileMustExist: true })
+    : null;
+  return _schedDb;
+}
+
+// Seconds since midnight in Chicago wall-clock for `now`. Matches the base of
+// GTFS scheduled times (and stst) for daytime trips; the plausibility cap above
+// absorbs the after-midnight service-day wrap that this doesn't model.
+function chicagoSecondsOfDay(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const g = (k) => +parts.find((p) => p.type === k).value;
+  return (g('hour') % 24) * 3600 + g('minute') * 60 + g('second');
+}
+
+// Project a bus's (lat, lon) onto a trip's ordered stop path and read off the
+// scheduled time at that point. `stops` = [{ lat, lon, schedSec }] in sequence.
+// Returns { distFt, schedSec } for the closest segment — distFt is the
+// off-path distance (our confidence gate), schedSec the interpolated scheduled
+// time. Null if fewer than two stops. Pure; exported for testing.
+function deviationFromStops(
+  stops,
+  lat,
+  lon,
+  { ftPerDegLon = FT_PER_DEG * Math.cos((lat * Math.PI) / 180) } = {},
+) {
+  if (!stops || stops.length < 2) return null;
+  const px = lon * ftPerDegLon;
+  const py = lat * FT_PER_DEG;
+  let best = null;
+  for (let i = 0; i < stops.length - 1; i++) {
+    const ax = stops[i].lon * ftPerDegLon;
+    const ay = stops[i].lat * FT_PER_DEG;
+    const bx = stops[i + 1].lon * ftPerDegLon;
+    const by = stops[i + 1].lat * FT_PER_DEG;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    const distFt = Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+    if (!best || distFt < best.distFt) {
+      const schedSec = stops[i].schedSec + t * (stops[i + 1].schedSec - stops[i].schedSec);
+      best = { distFt, schedSec };
+    }
+  }
+  return best;
+}
+
+// How late (+) or early (−) a bus is, in minutes, or null when we can't say
+// confidently. `vehicle` needs { route, schedStartSec, lat, lon }. `now` is the
+// snapshot clock the position was observed at.
+function scheduleDeviationMin(vehicle, now = new Date()) {
+  if (!vehicle || vehicle.schedStartSec == null || vehicle.route == null) return null;
+  if (!Number.isFinite(vehicle.lat) || !Number.isFinite(vehicle.lon)) return null;
+  const db = schedDb();
+  if (!db) return null;
+  if (!_schedStmt) {
+    _schedStmt = db.prepare(
+      'SELECT trip_id AS tripId, lat, lon, sched_sec AS schedSec FROM sched_stops WHERE route = ? AND start_sec = ? ORDER BY trip_id, seq',
+    );
+  }
+  const rows = _schedStmt.all(String(vehicle.route), vehicle.schedStartSec);
+  if (rows.length === 0) return null;
+  // Group by trip — two trips can share a (route, start_sec); the bus's own
+  // direction's stop path is the one it actually lies along, so projection
+  // distance disambiguates.
+  const byTrip = new Map();
+  for (const r of rows) {
+    if (!byTrip.has(r.tripId)) byTrip.set(r.tripId, []);
+    byTrip.get(r.tripId).push(r);
+  }
+  let best = null;
+  for (const stops of byTrip.values()) {
+    const res = deviationFromStops(stops, vehicle.lat, vehicle.lon);
+    if (res && (!best || res.distFt < best.distFt)) best = res;
+  }
+  if (!best || best.distFt > MAX_OFFROUTE_FT) return null;
+  const dev = (chicagoSecondsOfDay(now) - best.schedSec) / 60;
+  if (!Number.isFinite(dev) || Math.abs(dev) > MAX_PLAUSIBLE_DEV_MIN) return null;
+  return dev;
+}
+
 module.exports = {
   loadIndex,
+  scheduleDeviationMin,
+  deviationFromStops,
+  chicagoSecondsOfDay,
   expectedHeadwayMin,
   expectedTrainHeadwayMin,
   expectedTrainHeadwayMinAnyDir,

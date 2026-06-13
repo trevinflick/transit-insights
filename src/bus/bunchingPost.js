@@ -1,7 +1,12 @@
 const { names: routeNames } = require('./routes');
 const { assignBusNumbers } = require('./bunching');
 const { formatCallouts } = require('../shared/history');
-const { formatDistance, formatMinSec, elapsedMinutesLabel } = require('../shared/format');
+const {
+  formatDistance,
+  formatMinSec,
+  elapsedMinutesLabel,
+  formatDeviation,
+} = require('../shared/format');
 
 function routeTitle(route) {
   const name = routeNames[route];
@@ -14,11 +19,18 @@ function buildPostText(bunch, pattern, stop, callouts = [], opts = {}) {
   // reader can tie a numbered disc back to its bus. Listed in number order
   // (1 = lead bus) so the parenthetical reads 1, 2, 3… down the line.
   const labels = assignBusNumbers(bunch.vehicles);
+  // Optional per-vid schedule adherence (Map vid → minutes, + late / − early),
+  // computed by the caller. When present we append "12 min late" / "on time" to
+  // the parenthetical; buses we couldn't place keep the bare number.
+  const deviations = opts.deviations;
   const vids = bunch.vehicles
     .filter((v) => v.vid != null)
-    .map((v) => ({ label: `#${v.vid}`, n: labels.get(v.vid) }))
+    .map((v) => ({ label: `#${v.vid}`, n: labels.get(v.vid), dev: deviations?.get(v.vid) }))
     .sort((a, b) => a.n - b.n)
-    .map((x) => `${x.label} (${x.n})`)
+    .map((x) => {
+      const d = formatDeviation(x.dev);
+      return d ? `${x.label} (${x.n}, ${d})` : `${x.label} (${x.n})`;
+    })
     .join(', ');
   const busesLine = vids ? `\n\nBuses: ${vids}` : '';
   // 🥇 medal line when this bunch sets a new record for most buses ever seen

@@ -18,8 +18,9 @@ function recordBusObservations(vehicles, now = Date.now()) {
   try {
     const stmt = getDb().prepare(`
       INSERT INTO observations
-        (ts, kind, route, direction, vehicle_id, destination, lat, lon, pdist, heading, vehicle_ts)
-      VALUES (?, 'bus', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (ts, kind, route, direction, vehicle_id, destination, lat, lon, pdist, heading,
+         vehicle_ts, sched_start_sec, sched_start_date)
+      VALUES (?, 'bus', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const tx = getDb().transaction((items) => {
       for (const v of items) {
@@ -36,6 +37,8 @@ function recordBusObservations(vehicles, now = Date.now()) {
           Number.isFinite(v.pdist) ? v.pdist : null,
           Number.isFinite(v.heading) ? v.heading : null,
           tmstmpMs,
+          Number.isFinite(v.schedStartSec) ? v.schedStartSec : null,
+          v.schedStartDate || null,
         );
       }
     });
@@ -318,7 +321,7 @@ function getLatestBusSnapshot(routes, maxStaleMs = null, now = Date.now()) {
   const rows = getDb()
     .prepare(`
     SELECT route, direction AS pid, vehicle_id AS vid, destination,
-           lat, lon, pdist, heading, vehicle_ts
+           lat, lon, pdist, heading, vehicle_ts, sched_start_sec, sched_start_date
     FROM observations
     WHERE kind = 'bus' AND route IN (${placeholders}) AND ts = ? AND pdist IS NOT NULL
   `)
@@ -332,6 +335,8 @@ function getLatestBusSnapshot(routes, maxStaleMs = null, now = Date.now()) {
     heading: r.heading,
     pdist: r.pdist,
     destination: r.destination,
+    schedStartSec: r.sched_start_sec,
+    schedStartDate: r.sched_start_date,
     tmstmp: r.vehicle_ts != null ? new Date(r.vehicle_ts) : new Date(snapshotTs),
   }));
   return { vehicles, snapshotTs };

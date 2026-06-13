@@ -12,7 +12,7 @@ const {
   findParkedBusVids,
   PARKED_WINDOW_MS,
 } = require('../../src/bus/bunching');
-const { expectedTripMinutes } = require('../../src/shared/gtfs');
+const { expectedTripMinutes, scheduleDeviationMin } = require('../../src/shared/gtfs');
 const { getRecentBusObservationsByRoute } = require('../../src/shared/observations');
 const { loadPattern, findNearestStop } = require('../../src/bus/patterns');
 const { renderBunchingMap } = require('../../src/map');
@@ -280,10 +280,25 @@ async function main() {
     );
   }
 
+  // Schedule adherence per bus (+ late / − early), tied to the disc number in
+  // the post. Buses we can't confidently place (no stst, no GTFS match, off
+  // path) are simply absent from the map and keep the bare number.
+  const deviations = new Map();
+  for (const v of bunch.vehicles) {
+    const dev = scheduleDeviationMin(v, now);
+    if (dev != null) deviations.set(v.vid, dev);
+  }
+  if (deviations.size > 0) {
+    console.log(
+      `Schedule adherence: ${[...deviations.entries()].map(([vid, m]) => `#${vid} ${m >= 0 ? '+' : ''}${m.toFixed(1)}m`).join(', ')}`,
+    );
+  }
+
   const text = buildPostText(bunch, pattern, stop, callouts, {
     isAllTimeRecord,
     previousRecord,
     gapBehind,
+    deviations,
   });
   const alt = buildAltText(bunch, pattern, stop);
 

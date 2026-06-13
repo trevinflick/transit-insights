@@ -32,6 +32,22 @@ The post **names the empty stretch as a range** between the two stations flankin
 
 The map highlights the empty stretch, tags the two trains **L** (last seen, the one that just passed) and **N** (next up, the one riders are waiting on), and labels the same flanking stations the post names. The post spells the two roles out instead of `(last)`/`(next)` — "the last train" reads as the final train of the night, which is the opposite of what we mean.
 
+On **bus** gaps, the two flanking buses also carry schedule adherence when we can compute it — often the gap itself is a late "next up" bus, so showing it makes the cause legible:
+
+> Last seen: #1934 (on time) · Next up: #8021 (15 min late)
+
+This reuses `scheduleDeviationMin` (see [BUNCHING.md](./BUNCHING.md#schedule-adherence--scheduledeviationmin-bus-only) for how the late/early minutes are derived from each bus's self-reported scheduled start). Either bus may be unplaceable, in which case it shows the bare id. Trains have no per-vehicle schedule anchor, so train gap posts stay id-only.
+
+#### When adherence looks like it contradicts the gap
+
+A wide gap with two near-on-time flanking buses isn't a contradiction or a bug. Schedule adherence (each bus vs *its own* trip) and the gap (empty road *between* two buses) measure different things. When both visible buses are close to schedule, they're just bookends running trips scheduled far apart — and the trips that should run *between* them (cancelled / short-turned / never dispatched) aren't on the street. Roughly, `gap ≈ (trailing.stst − leading.stst) − adherence diff` = the sum of the missing headways.
+
+To keep that from reading as self-contradictory, the post appends a one-line explanation **only in that regime** — gap ≥ 2× the scheduled headway *and* the next-up bus within ~6 min of schedule (so a late bus genuinely can't account for the hole):
+
+> Both buses here are near schedule — the gap is from trips missing between them.
+
+When the next-up bus *is* the cause (e.g. 22 min late), the adherence line already explains the wait, so the note is suppressed. This is a deliberately factual line about what the data shows, not a verdict on the missing trips' cause — we don't assert "cancelled" or "ghost" since they could also be bunched or short-turned elsewhere.
+
 ## The technical version
 
 ### The core comparison

@@ -60,6 +60,11 @@ Brief list; deeper rationale in the linked deep-dives.
   breaks threading (each sees no parent and posts top-level).
 - **GTFS index throws past 7 days old**. After laptop sleep / cron outage,
   run `npm run fetch-gtfs` before manual runs.
+- **`fetch-gtfs.js` also writes `data/gtfs/schedule.sqlite`** (~180 MB,
+  gitignored): per-trip scheduled stop curves keyed by `(route, start_sec)`,
+  the substrate for `scheduleDeviationMin` (bus late/early in bunching + gap
+  posts). Rebuilt from scratch each run; absent file → adherence silently omits,
+  it doesn't throw. See `docs/BUNCHING.md`.
 - **Don't merge the active vs. headway/duration loops in `fetch-gtfs.js`**.
   `activeByHour` is keyed per direction and counts every revenue trip;
   `headways`/`durations` are keyed **per pattern** (origin→dest, after the

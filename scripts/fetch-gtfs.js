@@ -3,6 +3,7 @@
 require('dotenv').config({ path: require('node:path').join(__dirname, '..', '.env') });
 const axios = require('axios');
 const Fs = require('fs-extra');
+const Database = require('better-sqlite3');
 const Path = require('node:path');
 const { exec, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -13,6 +14,9 @@ const execAsync = promisify(exec);
 const GTFS_URL = 'https://www.transitchicago.com/downloads/sch_data/google_transit.zip';
 const ZIP_PATH = '/tmp/cta-gtfs.zip';
 const OUT_PATH = Path.join(__dirname, '..', 'data', 'gtfs', 'index.json');
+// Per-trip scheduled stop curves for bus schedule-adherence (scheduleDeviationMin).
+// Kept in SQLite, not index.json — it's ~1M+ rows (every bus trip × every stop).
+const SCHED_DB_PATH = Path.join(__dirname, '..', 'data', 'gtfs', 'schedule.sqlite');
 
 // Index every active CTA bus route so any consumer (bunching, speedmap,
 // pulse, gaps, ghosts) can resolve schedule data without per-list bookkeeping.
@@ -186,6 +190,65 @@ function computeBusDominantOrigin(tripMeta, firstStopId, { log = false } = {}) {
   return dominant;
 }
 
+// Build the per-trip scheduled stop curves used by scheduleDeviationMin. One row
+// per (bus trip, stop): keyed by (route, start_sec) where start_sec is the
+// trip's first-stop departure — the value a live bus reports as `stst`, so the
+// runtime joins a vehicle straight to its scheduled curve. Rebuilt from scratch
+// each run so it tracks today's active service like index.json.
+function writeScheduleDb({ busTripStops, tripMeta, firstDeparture, byStopId }) {
+  console.log('Building schedule.sqlite (per-trip scheduled stop curves)...');
+  Fs.ensureDirSync(Path.dirname(SCHED_DB_PATH));
+  Fs.removeSync(SCHED_DB_PATH);
+  const db = new Database(SCHED_DB_PATH);
+  db.pragma('journal_mode = OFF');
+  db.pragma('synchronous = OFF');
+  db.exec(`
+    CREATE TABLE sched_stops (
+      route TEXT NOT NULL,
+      start_sec INTEGER NOT NULL,
+      trip_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      lat REAL NOT NULL,
+      lon REAL NOT NULL,
+      sched_sec INTEGER NOT NULL
+    );
+  `);
+  const insert = db.prepare(
+    'INSERT INTO sched_stops (route, start_sec, trip_id, seq, lat, lon, sched_sec) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+  let trips = 0;
+  let rows = 0;
+  const tx = db.transaction(() => {
+    for (const [tripId, stopList] of busTripStops) {
+      const meta = tripMeta.get(tripId);
+      const startSec = firstDeparture.get(tripId);
+      if (!meta || startSec == null || stopList.length < 2) continue;
+      const ordered = [...stopList].sort((a, b) => a.seq - b.seq);
+      let wrote = 0;
+      for (const s of ordered) {
+        const stop = byStopId.get(s.stopId);
+        if (!stop || s.schedSec == null) continue;
+        const lat = parseFloat(stop.stop_lat);
+        const lon = parseFloat(stop.stop_lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        insert.run(meta.route, startSec, tripId, s.seq, lat, lon, s.schedSec);
+        wrote++;
+      }
+      if (wrote >= 2) {
+        trips++;
+        rows += wrote;
+      }
+    }
+  });
+  tx();
+  db.exec('CREATE INDEX idx_sched_route_start ON sched_stops(route, start_sec)');
+  db.close();
+  const bytes = Fs.statSync(SCHED_DB_PATH).size;
+  console.log(
+    `  wrote ${rows} stop rows across ${trips} bus trips (${(bytes / 1024 / 1024).toFixed(1)} MB)`,
+  );
+}
+
 async function main() {
   console.log(`Indexing ${BUS_ROUTES.length} bus routes: ${BUS_ROUTES.join(', ')}`);
   await downloadGtfs();
@@ -254,6 +317,10 @@ async function main() {
   const lastStopId = new Map(); // trip_id → stop_id
   const lastArrival = new Map(); // trip_id → seconds (last-stop arrival)
   const lastSeq = new Map();
+  // Every stop of every in-scope BUS trip, for the schedule-adherence curve:
+  // trip_id → [{ seq, stopId, schedSec }]. Bus only — rail adherence isn't a
+  // consumer yet and would roughly double the row count.
+  const busTripStops = new Map();
 
   let header = null;
   let tripIdIdx = -1;
@@ -275,6 +342,14 @@ async function main() {
     const tripId = parts[tripIdIdx];
     if (!tripMeta.has(tripId)) return;
     const seq = parseInt(parts[seqIdx], 10);
+    if (tripMeta.get(tripId).mode === 'bus') {
+      if (!busTripStops.has(tripId)) busTripStops.set(tripId, []);
+      busTripStops.get(tripId).push({
+        seq,
+        stopId: parts[stopIdIdx],
+        schedSec: parseGtfsTime(parts[arrIdx]),
+      });
+    }
     const prevFirst = firstSeq.get(tripId);
     if (prevFirst === undefined || seq < prevFirst) {
       firstSeq.set(tripId, seq);
@@ -293,6 +368,8 @@ async function main() {
   console.log('Reading stops.txt...');
   const stops = parseCsv(await readFromZip('stops.txt'));
   const byStopId = new Map(stops.map((s) => [s.stop_id, s]));
+
+  writeScheduleDb({ busTripStops, tripMeta, firstDeparture, byStopId });
 
   // Concurrent service_ids (daytime + Owl) overlap one dayType — resolve
   // dominance per hour so each picks the right one.

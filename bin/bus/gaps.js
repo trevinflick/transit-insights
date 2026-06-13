@@ -12,7 +12,7 @@ const { captureBusGapVideo } = require('../../src/bus/gapVideo');
 const { loginBus, postWithImage, postText, postWithVideo } = require('../../src/bus/bluesky');
 const { isOnCooldown } = require('../../src/shared/state');
 const { commitAndPost } = require('../../src/shared/postDetection');
-const { expectedHeadwayMin, loadIndex } = require('../../src/shared/gtfs');
+const { expectedHeadwayMin, loadIndex, scheduleDeviationMin } = require('../../src/shared/gtfs');
 const history = require('../../src/shared/history');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
 const {
@@ -278,7 +278,18 @@ async function main() {
     image = null;
   }
 
-  const text = buildPostText(gap, pattern, chosenStop, callouts);
+  // Schedule adherence for the two buses flanking the gap (+ late / − early).
+  // Often the gap itself is a late trailing bus; showing it makes the cause
+  // legible. Either may be null (unplaceable) — gapPost omits it then.
+  const leadingDev = scheduleDeviationMin(gap.leading, now);
+  const trailingDev = scheduleDeviationMin(gap.trailing, now);
+  if (leadingDev != null || trailingDev != null) {
+    console.log(
+      `Schedule adherence: last-seen #${gap.leading?.vid} ${leadingDev != null ? `${leadingDev >= 0 ? '+' : ''}${leadingDev.toFixed(1)}m` : 'n/a'}, next-up #${gap.trailing?.vid} ${trailingDev != null ? `${trailingDev >= 0 ? '+' : ''}${trailingDev.toFixed(1)}m` : 'n/a'}`,
+    );
+  }
+
+  const text = buildPostText(gap, pattern, chosenStop, callouts, { leadingDev, trailingDev });
   const alt = buildAltText(gap, pattern, chosenStop);
 
   // The timelapse aims the next bus at the gap *midpoint*, not chosenStop (which

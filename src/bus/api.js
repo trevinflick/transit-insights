@@ -44,6 +44,15 @@ function parseVehicle(v) {
     pdist: v.pdist,
     destination: v.des,
     delayed: v.dly,
+    // Schedule anchor: `stst` is the trip's scheduled start as seconds since
+    // midnight of its service day, `stsd` the service date (YYYY-MM-DD). Together
+    // with `route` they identify the exact GTFS trip this bus is running (its
+    // first-stop departure_time == stst), which is what schedule-adherence
+    // (scheduleDeviationMin) keys off of. `tatripid` is CTA's internal trip id —
+    // captured for completeness but NOT a GTFS trip_id (no direct join).
+    schedStartSec: v.stst != null && v.stst !== '' ? Number(v.stst) : null,
+    schedStartDate: v.stsd || null,
+    tatripid: v.tatripid != null ? String(v.tatripid) : null,
     tmstmp: parseBusTime(v.tmstmp),
   };
 }

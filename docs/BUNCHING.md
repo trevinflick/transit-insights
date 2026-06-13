@@ -41,6 +41,16 @@ The hourly bin (`bin/bus/bunching.js`) iterates ranked candidates and picks the 
 
 Additional terminal filtering at post time: even if `pdist` looks fine, if the cluster's nearest stop *is* the first or last named stop, it's a terminal layover and gets skipped.
 
+### Schedule adherence — `scheduleDeviationMin` (bus only)
+
+The `Buses:` line tags each clustered bus with its map disc number and, when we can compute it confidently, how late or early it is:
+
+> Buses: #8700 (1, 12 min late), #8228 (2, 3 min early)
+
+Every live bus self-reports the scheduled start of the trip it's running (`getvehicles` `stst` = seconds since midnight, `stsd` = service date). That plus the route identifies the exact GTFS trip — its first-stop departure equals `stst` — so we never have to *guess* which scheduled run a bus belongs to. That matters most here: in a bunch several buses sit at nearly the same place at the same time, so position alone can't tell them apart, but each bus carries its own schedule anchor.
+
+To turn that into minutes: `scripts/fetch-gtfs.js` writes a per-trip scheduled stop curve to `data/gtfs/schedule.sqlite` (one row per stop: `route, start_sec, lat, lon, sched_sec` — too large for `index.json`). At post time `scheduleDeviationMin` (`src/shared/gtfs.js`) looks up the bus's trip by `(route, stst)`, projects the bus's lat/lon onto that trip's stop path, interpolates the scheduled time at the projection point, and reports `now − scheduled` (positive = late). lat/lon is the anchor — not `pdist` — because BusTime patterns and GTFS shapes are different coordinate systems. A bus we can't place confidently (no `stst`, no trip match, or more than ~600 ft off the path) keeps its bare number rather than showing a guessed time. Trains don't expose a per-vehicle schedule anchor, so this is bus-only.
+
 ### Trains — `src/train/bunching.js`
 
 Trains don't report along-route distance, only lat/lon. So we have to compute "distance along the line" ourselves:

@@ -1,18 +1,29 @@
 const { names: routeNames } = require('./routes');
 const { formatCallouts } = require('../shared/history');
-const { formatMinutes, elapsedMinutesLabel, formatDistance } = require('../shared/format');
+const {
+  formatMinutes,
+  elapsedMinutesLabel,
+  formatDistance,
+  formatDeviation,
+} = require('../shared/format');
 
 function routeTitle(route) {
   const name = routeNames[route];
   return name ? `Route ${route} (${name})` : `Route ${route}`;
 }
 
-function buildPostText(gap, pattern, stop, callouts = []) {
+function buildPostText(gap, pattern, stop, callouts = [], opts = {}) {
   // `leading` is the bus already past the gap (last seen); `trailing` is the
   // next one a rider is waiting for. "(last)/(next)" read as ambiguous, so spell
-  // the rider roles out — the map tags the two discs L/N to match.
-  const lastSeen = gap.leading?.vid ? `#${gap.leading.vid}` : null;
-  const nextUp = gap.trailing?.vid ? `#${gap.trailing.vid}` : null;
+  // the rider roles out — the map tags the two discs L/N to match. When the
+  // caller supplies schedule adherence (opts.leadingDev/trailingDev, minutes,
+  // + late / − early) we append it; an unplaceable bus keeps the bare id.
+  const devSuffix = (min) => {
+    const d = formatDeviation(min);
+    return d ? ` (${d})` : '';
+  };
+  const lastSeen = gap.leading?.vid ? `#${gap.leading.vid}${devSuffix(opts.leadingDev)}` : null;
+  const nextUp = gap.trailing?.vid ? `#${gap.trailing.vid}${devSuffix(opts.trailingDev)}` : null;
   const busesLine =
     lastSeen || nextUp
       ? `\n\n${[lastSeen && `Last seen: ${lastSeen}`, nextUp && `Next up: ${nextUp}`].filter(Boolean).join(' · ')}`
@@ -28,11 +39,26 @@ function buildPostText(gap, pattern, stop, callouts = []) {
   if (before && after) whereClause = ` between ${before} and ${after}`;
   else if (before || after) whereClause = ` past ${before || after}`;
   else if (mid) whereClause = ` near ${mid}`;
+  // When the gap dwarfs the headway yet the next-up bus is close to schedule,
+  // the wait isn't a late bus — it's the trips that should run between these two
+  // buses not being on the street (cancelled / short-turned / never dispatched).
+  // Spell that out so the adherence line doesn't read as contradicting the gap.
+  // Only fires when we could place the next-up bus AND a late bus genuinely
+  // can't account for the hole; otherwise the adherence already tells the story.
+  const NEAR_SCHEDULE_MIN = 6;
+  const explainMissing =
+    opts.trailingDev != null &&
+    Math.abs(opts.trailingDev) <= NEAR_SCHEDULE_MIN &&
+    gap.expectedMin > 0 &&
+    gap.gapMin >= 2 * gap.expectedMin;
+  const missingLine = explainMissing
+    ? '\n\nBoth buses here are near schedule — the gap is from trips missing between them.'
+    : '';
   // Frame the number as a gap *between buses*, not "no bus for ~N min" — that
   // older phrasing read as "N minutes since a bus was here," but the span
   // measures the distance between the two buses bracketing the stretch. Tilde:
   // a distance/speed estimate, not a measured ETA.
-  const base = `🕳️ ${routeTitle(gap.route)} — ${pattern.direction}\n\nNo buses${whereClause} — a ~${formatMinutes(gap.gapMin)} gap, scheduled around every ${formatMinutes(gap.expectedMin)} this hour${busesLine}`;
+  const base = `🕳️ ${routeTitle(gap.route)} — ${pattern.direction}\n\nNo buses${whereClause} — a ~${formatMinutes(gap.gapMin)} gap, scheduled around every ${formatMinutes(gap.expectedMin)} this hour${busesLine}${missingLine}`;
   const tail = formatCallouts(callouts);
   return tail ? `${base}\n\n${tail}` : base;
 }
