@@ -4,6 +4,10 @@
 // cluster centroid: each vehicle is a numbered disc colored by its route, with
 // a legend mapping color → route. Generic over bus and train; the caller passes
 // already-normalized points + legend, so this module knows nothing about either.
+//
+// Split into view / base-map / frame so the cross-route timelapse video
+// (src/map/crossBunchingVideo.js) can render many frames against one fetched
+// base map — the still map is just a one-frame render.
 const sharp = require('sharp');
 const { fitZoom, project } = require('../shared/projection');
 const {
@@ -13,6 +17,7 @@ const {
   requireMapboxToken,
   fetchMapboxStatic,
   separateMarkers,
+  buildClipProgress,
   xmlEscape,
 } = require('./common');
 
@@ -24,12 +29,9 @@ function colorForIndex(i) {
   return PALETTE[i % PALETTE.length];
 }
 
-// `points`: [{ lat, lon, label, groupIndex }] — one per vehicle, label = disc
-// number, groupIndex = which route group (drives color). `legend`:
-// [{ label, groupIndex }]. Returns a JPEG buffer. Throws (caller posts
-// text-only) on <2 points or a missing Mapbox token.
-async function renderCrossBunchingMap({ points, legend = [], title = '' }) {
-  if (!points || points.length < 2) throw new Error('cross-bunching map needs ≥2 points');
+// Framing (center + zoom) covering all `points` ({ lat, lon }). For a video,
+// pass every position across the whole window so the viewport stays stable.
+function computeCrossView(points) {
   const lats = points.map((p) => p.lat);
   const lons = points.map((p) => p.lon);
   const bbox = {
@@ -50,25 +52,39 @@ async function renderCrossBunchingMap({ points, legend = [], title = '' }) {
   const centerLat = (padded.minLat + padded.maxLat) / 2;
   const centerLon = (padded.minLon + padded.maxLon) / 2;
   const zoom = Math.max(12, Math.min(17, Math.floor(fitZoom(padded, WIDTH, HEIGHT, 90))));
+  return { centerLat, centerLon, zoom };
+}
 
+async function fetchCrossBaseMap(view) {
   const token = requireMapboxToken();
-  const url = `https://api.mapbox.com/styles/v1/${STYLE}/static/${centerLon.toFixed(5)},${centerLat.toFixed(5)},${zoom.toFixed(2)}/${WIDTH}x${HEIGHT}@2x?access_token=${token}`;
-  const baseMap = await fetchMapboxStatic(url, 20000);
+  const url = `https://api.mapbox.com/styles/v1/${STYLE}/static/${view.centerLon.toFixed(5)},${view.centerLat.toFixed(5)},${view.zoom.toFixed(2)}/${WIDTH}x${HEIGHT}@2x?access_token=${token}`;
+  return fetchMapboxStatic(url, 20000);
+}
 
-  // Project then nudge apart radially so overlapping discs stay legible.
-  const raw = points.map((p) => project(p.lat, p.lon, centerLat, centerLon, zoom, WIDTH, HEIGHT));
+// Composite one frame: numbered route-colored discs (honoring per-vehicle
+// `opacity` so dropped vehicles can fade), legend, title, and an optional clip
+// progress bar (video). `vehicles` = [{ lat, lon, label, groupIndex, opacity? }].
+async function renderCrossFrame(
+  view,
+  baseMap,
+  vehicles,
+  { legend = [], title = '', clock = null } = {},
+) {
+  const raw = vehicles.map((p) =>
+    project(p.lat, p.lon, view.centerLat, view.centerLon, view.zoom, WIDTH, HEIGHT),
+  );
   const sep = separateMarkers(raw, MARKER_RADIUS * 2 + 6);
-  const discs = points.map((p, i) => {
+  const discs = vehicles.map((p, i) => {
     const { x, y } = sep[i];
     const color = `#${colorForIndex(p.groupIndex)}`;
+    const op = p.opacity ?? 1;
     const fontSize = MARKER_RADIUS * 1.2;
     return (
-      `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${MARKER_RADIUS}" fill="${color}" stroke="#fff" stroke-width="3"/>` +
-      `<text x="${x.toFixed(1)}" y="${(y + fontSize * 0.35).toFixed(1)}" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700" fill="#1c1c1c">${xmlEscape(p.label)}</text>`
+      `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${MARKER_RADIUS}" fill="${color}" fill-opacity="${op}" stroke="#fff" stroke-opacity="${op}" stroke-width="3"/>` +
+      `<text x="${x.toFixed(1)}" y="${(y + fontSize * 0.35).toFixed(1)}" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700" fill="#1c1c1c" opacity="${op}">${xmlEscape(p.label)}</text>`
     );
   });
 
-  // Legend bottom-left: color swatch + route label per group.
   const legendEls = [];
   if (legend.length) {
     const rowH = 40;
@@ -89,7 +105,6 @@ async function renderCrossBunchingMap({ points, legend = [], title = '' }) {
     });
   }
 
-  // Title pill top-center.
   const titleEls = [];
   if (title) {
     const pillH = 56;
@@ -101,12 +116,24 @@ async function renderCrossBunchingMap({ points, legend = [], title = '' }) {
     );
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">${titleEls.join('')}${legendEls.join('')}${discs.join('')}</svg>`;
+  const clockEls = clock ? [buildClipProgress({ ...clock, width: WIDTH, height: HEIGHT })] : [];
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">${titleEls.join('')}${legendEls.join('')}${discs.join('')}${clockEls.join('')}</svg>`;
   return sharp(baseMap)
     .resize(WIDTH, HEIGHT)
     .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
     .jpeg({ quality: 85 })
     .toBuffer();
+}
+
+// `points`: [{ lat, lon, label, groupIndex }]. `legend`: [{ label, groupIndex }].
+// Returns a JPEG buffer (single frame). Throws (caller posts text-only) on <2
+// points or a missing Mapbox token.
+async function renderCrossBunchingMap({ points, legend = [], title = '' }) {
+  if (!points || points.length < 2) throw new Error('cross-bunching map needs ≥2 points');
+  const view = computeCrossView(points);
+  const baseMap = await fetchCrossBaseMap(view);
+  return renderCrossFrame(view, baseMap, points, { legend, title });
 }
 
 // Build the normalized { points, legend } the renderer wants from a cluster's
@@ -127,4 +154,11 @@ function pointsFromCluster(items, { idOf, groupKeyOf, labels, groupOrder, legend
   return { points, legend };
 }
 
-module.exports = { renderCrossBunchingMap, pointsFromCluster, PALETTE };
+module.exports = {
+  renderCrossBunchingMap,
+  renderCrossFrame,
+  computeCrossView,
+  fetchCrossBaseMap,
+  pointsFromCluster,
+  PALETTE,
+};

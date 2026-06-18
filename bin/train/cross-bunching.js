@@ -3,7 +3,8 @@
 // shared Loop track — Brown/Orange/Pink/Purple stacked at Tower 18). detect →
 // render station map → post (train account), keyed on the PLACE. Runs just
 // before bin/train/bunching.js so its posted pileups suppress the per-line post
-// for the same trains. Supports --dry-run. Static map only for now.
+// for the same trains. Replies with a ~10-min timelapse (from observation
+// history). Supports --dry-run.
 require('../../src/shared/env');
 
 const argv = require('minimist')(process.argv.slice(2));
@@ -14,14 +15,22 @@ const { getRecentTrainPositions } = require('../../src/shared/observations');
 const { haversineFt } = require('../../src/shared/geo');
 const stations = require('../../src/train/data/trainStations.json');
 const { renderCrossBunchingMap, pointsFromCluster } = require('../../src/map');
-const { buildPostText, buildAltText, lineLabel } = require('../../src/train/crossBunchingPost');
-const { loginTrain, postWithImage, postText } = require('../../src/train/bluesky');
+const { captureCrossBunchingVideo } = require('../../src/map/crossBunchingVideo');
+const {
+  buildPostText,
+  buildAltText,
+  buildVideoPostText,
+  buildVideoAltText,
+  lineLabel,
+} = require('../../src/train/crossBunchingPost');
+const { loginTrain, postWithImage, postWithVideo, postText } = require('../../src/train/bluesky');
 const { isOnCooldown } = require('../../src/shared/state');
 const { commitAndPost } = require('../../src/shared/postDetection');
 const history = require('../../src/shared/history');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
 
 const WINDOW_MS = 5 * 60 * 1000;
+const VIDEO_WINDOW_MS = 10 * 60 * 1000; // history window for the timelapse reply
 const STOPPED_DRIFT_FT = 350; // a train that moved < this across the window is stuck
 const PLACE_MAX_FT = 2200; // a station farther than this isn't a fair label
 const CROSS_TRAIN_DAILY_CAP = 2;
@@ -156,20 +165,18 @@ async function main() {
   const text = buildPostText(chosen, ctx, callouts);
   const alt = buildAltText(chosen, ctx);
 
+  const { points, legend } = pointsFromCluster(chosen.trains, {
+    idOf: (t) => t.rn,
+    groupKeyOf: (t) => t.line,
+    labels,
+    groupOrder: byLine.map((g) => g.line),
+    legendLabelOf: (l) => lineLabel(l),
+  });
+  const mapTitle = `${chosen.trains.length} trains · ${chosen.lineCount} lines`;
+
   let image;
   try {
-    const { points, legend } = pointsFromCluster(chosen.trains, {
-      idOf: (t) => t.rn,
-      groupKeyOf: (t) => t.line,
-      labels,
-      groupOrder: byLine.map((g) => g.line),
-      legendLabelOf: (l) => lineLabel(l),
-    });
-    image = await renderCrossBunchingMap({
-      points,
-      legend,
-      title: `${chosen.trains.length} trains · ${chosen.lineCount} lines`,
-    });
+    image = await renderCrossBunchingMap({ points, legend, title: mapTitle });
   } catch (e) {
     console.warn(`Map render failed (${e.message}); will post text-only`);
     image = null;
@@ -195,7 +202,7 @@ async function main() {
     nearStop: placeName,
     memberIds: chosen.trains.map((t) => t.rn),
   };
-  await commitAndPost({
+  const posted = await commitAndPost({
     cooldownKeys: [`xbunch:train:${placeKey}`],
     forceClearCooldown: cooldownOverridden,
     recordSkip: () => history.recordBunching({ ...baseEvent, posted: false }),
@@ -218,6 +225,47 @@ async function main() {
     postWithImage,
     postText,
   });
+
+  // Timelapse reply is non-fatal — the primary post already went out. Built from
+  // observation history (observe-trains records positions every ~30s).
+  if (posted?.primary?.uri) {
+    try {
+      const groupOrder = byLine.map((g) => g.line);
+      const groupIndexByLine = new Map(groupOrder.map((l, i) => [l, i]));
+      const memberSet = new Set(chosen.trains.map((t) => String(t.rn)));
+      const videoRows = getRecentTrainPositions(Date.now() - VIDEO_WINDOW_MS)
+        .filter(
+          (o) => memberSet.has(String(o.rn)) && Number.isFinite(o.lat) && Number.isFinite(o.lon),
+        )
+        .map((o) => ({
+          id: String(o.rn),
+          lat: o.lat,
+          lon: o.lon,
+          ts: o.ts,
+          label: String(labels.get(o.rn) ?? '?'),
+          groupIndex: groupIndexByLine.get(o.line) ?? 0,
+        }));
+      const video = await captureCrossBunchingVideo(videoRows, { legend, title: mapTitle });
+      if (!video) {
+        console.log('Timelapse history produced <2 frames, skipping reply');
+        return;
+      }
+      const replyRef = {
+        root: { uri: posted.primary.uri, cid: posted.primary.cid },
+        parent: { uri: posted.primary.uri, cid: posted.primary.cid },
+      };
+      const reply = await postWithVideo(
+        posted.agent,
+        buildVideoPostText(video, chosen),
+        video.buffer,
+        buildVideoAltText(chosen, ctx),
+        replyRef,
+      );
+      console.log(`Timelapse reply: ${reply.url}`);
+    } catch (e) {
+      console.warn(`Timelapse reply failed: ${e.message}`);
+    }
+  }
 }
 
 runBin(main);

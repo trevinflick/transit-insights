@@ -3,8 +3,8 @@
 // 2 #22 + 3 #36 stacked at Clark & Belmont). detect → render intersection map →
 // post (bus account), with the bunching incident lifecycle keyed on the PLACE
 // instead of a route. Runs just before bin/bus/bunching.js so its posted
-// pileups suppress the per-route post for the same buses. Supports --dry-run.
-// Static map only for now; timelapse video is a follow-up.
+// pileups suppress the per-route post for the same buses. Replies with a
+// ~10-min timelapse of the pileup (from observation history). Supports --dry-run.
 require('../../src/shared/env');
 
 const argv = require('minimist')(process.argv.slice(2));
@@ -17,8 +17,15 @@ const { getRecentBusObservationsByRoute } = require('../../src/shared/observatio
 const { loadPattern } = require('../../src/bus/patterns');
 const { haversineFt } = require('../../src/shared/geo');
 const { renderCrossBunchingMap, pointsFromCluster } = require('../../src/map');
-const { buildPostText, buildAltText, routeLabel } = require('../../src/bus/crossBunchingPost');
-const { loginBus, postWithImage, postText } = require('../../src/bus/bluesky');
+const { captureCrossBunchingVideo } = require('../../src/map/crossBunchingVideo');
+const {
+  buildPostText,
+  buildAltText,
+  buildVideoPostText,
+  buildVideoAltText,
+  routeLabel,
+} = require('../../src/bus/crossBunchingPost');
+const { loginBus, postWithImage, postWithVideo, postText } = require('../../src/bus/bluesky');
 const { isOnCooldown } = require('../../src/shared/state');
 const { commitAndPost } = require('../../src/shared/postDetection');
 const history = require('../../src/shared/history');
@@ -26,6 +33,7 @@ const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
 
 const PLACE_MAX_FT = 1200;
 const CROSS_BUS_DAILY_CAP = 3;
+const VIDEO_WINDOW_MS = 10 * 60 * 1000; // history window for the timelapse reply
 
 function placeKeyFor(centroid) {
   return `${centroid.lat.toFixed(3)},${centroid.lon.toFixed(3)}`;
@@ -166,20 +174,18 @@ async function main() {
   const text = buildPostText(chosen, ctx, callouts);
   const alt = buildAltText(chosen, ctx);
 
+  const { points, legend } = pointsFromCluster(chosen.vehicles, {
+    idOf: (v) => v.vid,
+    groupKeyOf: (v) => v.route,
+    labels,
+    groupOrder: byRoute.map((g) => g.route),
+    legendLabelOf: (r) => routeLabel(r),
+  });
+  const mapTitle = `${chosen.vehicles.length} buses · ${chosen.routeCount} routes`;
+
   let image;
   try {
-    const { points, legend } = pointsFromCluster(chosen.vehicles, {
-      idOf: (v) => v.vid,
-      groupKeyOf: (v) => v.route,
-      labels,
-      groupOrder: byRoute.map((g) => g.route),
-      legendLabelOf: (r) => routeLabel(r),
-    });
-    image = await renderCrossBunchingMap({
-      points,
-      legend,
-      title: `${chosen.vehicles.length} buses · ${chosen.routeCount} routes`,
-    });
+    image = await renderCrossBunchingMap({ points, legend, title: mapTitle });
   } catch (e) {
     console.warn(`Map render failed (${e.message}); will post text-only`);
     image = null;
@@ -205,7 +211,7 @@ async function main() {
     nearStop: placeName,
     memberIds: chosen.vehicles.map((v) => v.vid),
   };
-  await commitAndPost({
+  const posted = await commitAndPost({
     cooldownKeys: [`xbunch:bus:${placeKey}`],
     forceClearCooldown: cooldownOverridden,
     recordSkip: () => history.recordBunching({ ...baseEvent, posted: false }),
@@ -228,6 +234,50 @@ async function main() {
     postWithImage,
     postText,
   });
+
+  // Timelapse reply is non-fatal — the primary post already went out. Built from
+  // observation history (the observe-buses loop records positions every minute).
+  if (posted?.primary?.uri) {
+    try {
+      const groupOrder = byRoute.map((g) => g.route);
+      const groupIndexByRoute = new Map(groupOrder.map((r, i) => [r, i]));
+      const routeByVid = new Map(chosen.vehicles.map((v) => [String(v.vid), v.route]));
+      const memberSet = new Set(chosen.vehicles.map((v) => String(v.vid)));
+      const recent = getRecentBusObservationsByRoute(routes, Date.now() - VIDEO_WINDOW_MS);
+      const videoRows = [...recent.values()]
+        .flat()
+        .filter(
+          (o) => memberSet.has(String(o.vid)) && Number.isFinite(o.lat) && Number.isFinite(o.lon),
+        )
+        .map((o) => ({
+          id: String(o.vid),
+          lat: o.lat,
+          lon: o.lon,
+          ts: o.ts,
+          label: String(labels.get(o.vid) ?? '?'),
+          groupIndex: groupIndexByRoute.get(routeByVid.get(String(o.vid))) ?? 0,
+        }));
+      const video = await captureCrossBunchingVideo(videoRows, { legend, title: mapTitle });
+      if (!video) {
+        console.log('Timelapse history produced <2 frames, skipping reply');
+        return;
+      }
+      const replyRef = {
+        root: { uri: posted.primary.uri, cid: posted.primary.cid },
+        parent: { uri: posted.primary.uri, cid: posted.primary.cid },
+      };
+      const reply = await postWithVideo(
+        posted.agent,
+        buildVideoPostText(video, chosen),
+        video.buffer,
+        buildVideoAltText(chosen, ctx),
+        replyRef,
+      );
+      console.log(`Timelapse reply: ${reply.url}`);
+    } catch (e) {
+      console.warn(`Timelapse reply failed: ${e.message}`);
+    }
+  }
 }
 
 runBin(main);
