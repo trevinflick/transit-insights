@@ -61,6 +61,35 @@ async function placeNameForCluster(cluster) {
   return best && best.d <= PLACE_MAX_FT ? best.name : null;
 }
 
+// Route-line overlays for the map: for each route group, draw the pattern the
+// pileup is actually sitting on. We pick the clustered bus of that route nearest
+// the centroid and load its pattern (buses in a bunch share a pid, so any of
+// them resolves the same line through the corner). groupIndex matches the disc
+// color so each line ties to its vehicles + legend. Best-effort — a route whose
+// pattern won't load is just left without a line.
+async function buildRoutePaths(cluster, groupOrder) {
+  const paths = [];
+  for (let groupIndex = 0; groupIndex < groupOrder.length; groupIndex++) {
+    const route = groupOrder[groupIndex];
+    const members = cluster.vehicles.filter((v) => v.route === route && v.pid);
+    if (members.length === 0) continue;
+    const rep = members.reduce((a, b) =>
+      haversineFt(b, cluster.centroid) < haversineFt(a, cluster.centroid) ? b : a,
+    );
+    let pattern;
+    try {
+      pattern = await loadPattern(rep.pid);
+    } catch {
+      continue;
+    }
+    const points = (pattern.points || [])
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
+      .map((p) => ({ lat: p.lat, lon: p.lon }));
+    if (points.length >= 2) paths.push({ points, groupIndex });
+  }
+  return paths;
+}
+
 function recordSkip(cluster, placeKey, suppressed) {
   history.recordBunching({
     kind: 'bus-multi',
@@ -182,10 +211,20 @@ async function main() {
     legendLabelOf: (r) => routeLabel(r),
   });
   const mapTitle = `${chosen.vehicles.length} buses · ${chosen.routeCount} routes`;
+  const routePaths = await buildRoutePaths(
+    chosen,
+    byRoute.map((g) => g.route),
+  );
 
   let image;
   try {
-    image = await renderCrossBunchingMap({ points, legend, title: mapTitle, markerKind: 'bus' });
+    image = await renderCrossBunchingMap({
+      points,
+      legend,
+      title: mapTitle,
+      markerKind: 'bus',
+      routePaths,
+    });
   } catch (e) {
     console.warn(`Map render failed (${e.message}); will post text-only`);
     image = null;
@@ -261,6 +300,7 @@ async function main() {
         legend,
         title: mapTitle,
         markerKind: 'bus',
+        routePaths,
       });
       if (!video) {
         console.log('Timelapse history produced <2 frames, skipping reply');

@@ -142,6 +142,35 @@ cooldown, daily cap, callouts, record — reuses `history.js` but is **keyed on 
 place** (rounded centroid / nearest stop) under a new `kind` (`bus-multi` /
 `train-multi`), since the incident *is* a location, not a route.
 
+**Route lines under the discs.** Like the per-route bunching maps, the still
+image and the timelapse draw each involved route's polyline baked into the
+Mapbox base map as a `path-` overlay (black halo + a route-colored core), so a
+viewer sees the lines that are actually converging on the pileup, not just a
+floating cluster of discs. The bins source the geometry per group — buses load
+the pattern (`loadPattern(pid)`) the route's nearest-to-centroid clustered bus
+is on; trains use `buildLinePolyline(trainLines, line)` — and hand it to the map
+as `routePaths: [{ points, groupIndex }]`.
+
+`buildRoutePathOverlays` then, per line:
+
+- **Clips to the visible frame**, grown ~35% on each side (`clipPathToView` →
+  `frameBounds`, which recovers the rendered viewport's lat/lon from its
+  center + zoom). Keeping one point past each boundary crossing means a route
+  that continues beyond the pileup runs all the way *off* every edge instead of
+  stopping short — at any zoom, including the wider window the video frames over.
+- **Thins** the survivors to ≤ 120 vertices (`thinPolylinePoints`) so a dense
+  GTFS shape (a vertex every few feet) doesn't blow the Mapbox static URL length
+  with several lines packed into one request.
+- **Colors** the core to match that group's discs + legend. Trains pass official
+  CTA line colors (`LINE_COLORS` — Red, Brown, Orange…) via the map's `colors`
+  option, so a line reads as its real self rather than an arbitrary palette
+  swatch; buses, which have no canonical color, fall back to the palette
+  (`colorForGroup`). All halos are drawn first, then all cores, so where two
+  routes cross a core is never buried under another route's halo.
+
+Route-line sourcing is best-effort — a route whose pattern/shape won't resolve
+just posts without its trace line.
+
 ### Suppression (cross-route beats per-route)
 
 The cross-route bin runs **1 minute before** the per-route bin (see

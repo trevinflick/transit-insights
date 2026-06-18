@@ -13,11 +13,21 @@ const INTERPOLATE = 4; // in-between frames per observation gap, for smooth glid
 const TAIL_FADE_MS = 60 * 1000; // fade a dropped vehicle out over a minute
 
 // `memberRows`: [{ id, lat, lon, ts, label, groupIndex }] over the window — all
-// members of the cluster, one row per observation. Returns { buffer, elapsedSec }
-// or null (<2 distinct snapshots / encode produced nothing).
+// members of the cluster, one row per observation. `routePaths` (optional):
+// [{ points:[{lat,lon}], groupIndex }] for each route, baked into the shared
+// base map so the lines sit under the gliding discs. `colors` (optional):
+// per-group hex overrides (official line colors) aligned to groupIndex. Returns
+// { buffer, elapsedSec } or null (<2 distinct snapshots / encode produced nothing).
 async function captureCrossBunchingVideo(
   memberRows,
-  { legend = [], title = '', markerKind = 'bus', interpolate = INTERPOLATE } = {},
+  {
+    legend = [],
+    title = '',
+    markerKind = 'bus',
+    routePaths = [],
+    colors = [],
+    interpolate = INTERPOLATE,
+  } = {},
 ) {
   const rows = (memberRows || []).filter(
     (r) => Number.isFinite(r?.lat) && Number.isFinite(r?.lon) && Number.isFinite(r?.ts),
@@ -35,7 +45,7 @@ async function captureCrossBunchingVideo(
   if (snapshots.length < 2) return null;
 
   const view = computeCrossView(rows.map((r) => ({ lat: r.lat, lon: r.lon })));
-  const baseMap = await fetchCrossBaseMap(view);
+  const baseMap = await fetchCrossBaseMap(view, routePaths, colors);
 
   const series = buildVehicleSeries(snapshots, {
     itemsOf: (s) => s.vehicles,
@@ -70,6 +80,7 @@ async function captureCrossBunchingVideo(
         legend,
         title,
         markerKind,
+        colors,
         clock: { elapsedSec: (times[i] - startTs) / 1000, totalSec },
       }),
     );

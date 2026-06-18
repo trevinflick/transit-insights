@@ -1,6 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { pointsFromCluster } = require('../../src/map/crossBunching');
+const {
+  pointsFromCluster,
+  clipPathToView,
+  buildRoutePathOverlays,
+  PALETTE,
+} = require('../../src/map/crossBunching');
 
 // pointsFromCluster is pure (no Mapbox); the render itself hits the network and
 // is exercised only via the bin. Here we lock down the normalization: discs
@@ -32,4 +37,97 @@ test('pointsFromCluster normalizes members to discs + legend', () => {
     { label: 'Route 36', groupIndex: 0 },
     { label: 'Route 22', groupIndex: 1 },
   ]);
+});
+
+// A view tight on the Loop. At z14 the frame spans well under ±0.1°, so points
+// within ±0.005° are on-screen and points ±0.2° away are far off-screen.
+const VIEW = { centerLat: 41.9, centerLon: -87.65, zoom: 14 };
+
+// clipPathToView trims a full route polyline down to the rendered frame, keeping
+// one outside point past each boundary crossing so the line runs to (and off)
+// the edge instead of stopping short.
+test('clipPathToView keeps the on-frame stretch plus boundary continuity', () => {
+  const c = VIEW.centerLat;
+  // A south→north line at the center longitude: two far below, three on-screen,
+  // two far above.
+  const points = [
+    { lat: c - 0.5, lon: -87.65 }, // far south, both neighbors outside → dropped
+    { lat: c - 0.2, lon: -87.65 }, // outside, but next point is on-screen → kept
+    { lat: c - 0.005, lon: -87.65 }, // on-screen → kept
+    { lat: c, lon: -87.65 }, // on-screen → kept
+    { lat: c + 0.005, lon: -87.65 }, // on-screen → kept
+    { lat: c + 0.2, lon: -87.65 }, // outside, but prev point is on-screen → kept
+    { lat: c + 0.5, lon: -87.65 }, // far north, both neighbors outside → dropped
+  ];
+  const kept = clipPathToView(points, VIEW);
+  assert.deepEqual(
+    kept.map((p) => Number((p.lat - c).toFixed(3))),
+    [-0.2, -0.005, 0, 0.005, 0.2],
+  );
+});
+
+test('clipPathToView returns [] when nothing lands near the frame', () => {
+  const points = [
+    { lat: 40.0, lon: -88.0 },
+    { lat: 40.1, lon: -88.1 },
+  ];
+  assert.deepEqual(clipPathToView(points, VIEW), []);
+});
+
+// buildRoutePathOverlays emits a black halo + route-colored core per path, all
+// halos before all cores (so a crossing core never hides under another halo),
+// and skips paths that clip away to nothing.
+test('buildRoutePathOverlays draws halo-then-core colored by group', () => {
+  const routePaths = [
+    {
+      groupIndex: 0,
+      points: [
+        { lat: 41.901, lon: -87.65 },
+        { lat: 41.899, lon: -87.65 },
+      ],
+    },
+    {
+      groupIndex: 1,
+      points: [
+        { lat: 41.9, lon: -87.651 },
+        { lat: 41.9, lon: -87.649 },
+      ],
+    },
+    // Clips to nothing — skipped entirely.
+    {
+      groupIndex: 2,
+      points: [
+        { lat: 10.0, lon: 10.0 },
+        { lat: 10.1, lon: 10.1 },
+      ],
+    },
+  ];
+  const overlays = buildRoutePathOverlays(routePaths, VIEW);
+  assert.equal(overlays.length, 4); // 2 halos + 2 cores
+  assert.ok(overlays[0].startsWith('path-11+000('));
+  assert.ok(overlays[1].startsWith('path-11+000('));
+  assert.ok(overlays[2].startsWith(`path-6+${PALETTE[0]}(`));
+  assert.ok(overlays[3].startsWith(`path-6+${PALETTE[1]}(`));
+});
+
+// Per-group color overrides (official line colors) win over the palette for the
+// route-line core.
+test('buildRoutePathOverlays uses per-group color overrides', () => {
+  const routePaths = [
+    {
+      groupIndex: 0,
+      points: [
+        { lat: 41.901, lon: -87.65 },
+        { lat: 41.899, lon: -87.65 },
+      ],
+    },
+  ];
+  const overlays = buildRoutePathOverlays(routePaths, VIEW, ['c60c30']);
+  assert.equal(overlays.length, 2);
+  assert.ok(overlays[1].startsWith('path-6+c60c30(')); // official Red, not PALETTE[0]
+});
+
+test('buildRoutePathOverlays returns [] with no paths', () => {
+  assert.deepEqual(buildRoutePathOverlays([], VIEW), []);
+  assert.deepEqual(buildRoutePathOverlays(undefined, VIEW), []);
 });

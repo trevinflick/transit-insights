@@ -9,7 +9,9 @@ require('../../src/shared/env');
 
 const argv = require('minimist')(process.argv.slice(2));
 
-const { getAllTrainPositions } = require('../../src/train/api');
+const { getAllTrainPositions, LINE_COLORS } = require('../../src/train/api');
+const { buildLinePolyline } = require('../../src/train/speedmap');
+const trainLines = require('../../src/train/data/trainLines.json');
 const { detectCrossLineBunches, groupByLine } = require('../../src/train/crossBunching');
 const { getRecentTrainPositions } = require('../../src/shared/observations');
 const { haversineFt } = require('../../src/shared/geo');
@@ -70,6 +72,23 @@ function nearestStation(centroid) {
 
 function placeKeyFor(centroid) {
   return `${centroid.lat.toFixed(3)},${centroid.lon.toFixed(3)}`;
+}
+
+// Route-line overlays for the map: each involved line's polyline, colored to
+// match its discs + legend (groupIndex = index in groupOrder). The map module
+// clips each to the framed intersection, so passing the whole line is fine.
+// Best-effort — a line with no shape just renders without a trace line.
+function buildRoutePaths(groupOrder) {
+  const paths = [];
+  for (let groupIndex = 0; groupIndex < groupOrder.length; groupIndex++) {
+    // buildLinePolyline points are [lat, lon] arrays; the map wants { lat, lon }.
+    const { points } = buildLinePolyline(trainLines, groupOrder[groupIndex]);
+    const pts = (points || [])
+      .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+      .map((p) => ({ lat: p[0], lon: p[1] }));
+    if (pts.length >= 2) paths.push({ points: pts, groupIndex });
+  }
+  return paths;
 }
 
 function recordSkip(cluster, placeKey, suppressed) {
@@ -173,10 +192,22 @@ async function main() {
     legendLabelOf: (l) => lineLabel(l),
   });
   const mapTitle = `${chosen.trains.length} trains · ${chosen.lineCount} lines`;
+  const groupLines = byLine.map((g) => g.line);
+  const routePaths = buildRoutePaths(groupLines);
+  // Official CTA line colors (Red, Brown, Orange…) so each disc + line reads as
+  // its real line rather than an arbitrary palette swatch.
+  const colors = groupLines.map((line) => LINE_COLORS[line] || null);
 
   let image;
   try {
-    image = await renderCrossBunchingMap({ points, legend, title: mapTitle, markerKind: 'train' });
+    image = await renderCrossBunchingMap({
+      points,
+      legend,
+      title: mapTitle,
+      markerKind: 'train',
+      routePaths,
+      colors,
+    });
   } catch (e) {
     console.warn(`Map render failed (${e.message}); will post text-only`);
     image = null;
@@ -249,6 +280,8 @@ async function main() {
         legend,
         title: mapTitle,
         markerKind: 'train',
+        routePaths,
+        colors,
       });
       if (!video) {
         console.log('Timelapse history produced <2 frames, skipping reply');

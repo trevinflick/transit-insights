@@ -416,6 +416,21 @@ function perpendicularFromBearing(bearingDeg) {
   return { x: Math.cos(rad), y: Math.sin(rad) };
 }
 
+// Evenly decimate a polyline to at most `maxPoints` vertices, always keeping the
+// endpoints. Used to bound a Mapbox static `path-` overlay's URL length when the
+// source geometry is far denser than the rendered line needs (e.g. GTFS shapes
+// with a vertex every few feet).
+function thinPolylinePoints(points, maxPoints = 120) {
+  if (!Array.isArray(points) || points.length <= maxPoints) return points || [];
+  if (maxPoints < 2) return points.slice(0, 1);
+  const out = [];
+  const last = points.length - 1;
+  for (let i = 0; i < maxPoints; i++) {
+    out.push(points[Math.round((i * last) / (maxPoints - 1))]);
+  }
+  return out;
+}
+
 // Comet motion trail: a muted line through a vehicle's recent pixel positions
 // (oldest → newest), fading and tapering toward the tail so the head reads as
 // "now" and the tail as "where it came from." The vehicle's disc is drawn on
@@ -516,6 +531,7 @@ module.exports = {
   sliceIntoSegments,
   separateMarkers,
   perpendicularFromBearing,
+  thinPolylinePoints,
   measureTextWidth,
   fitTitlePill,
   paddedBbox,
