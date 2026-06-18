@@ -17,7 +17,7 @@ const TAIL_FADE_MS = 60 * 1000; // fade a dropped vehicle out over a minute
 // or null (<2 distinct snapshots / encode produced nothing).
 async function captureCrossBunchingVideo(
   memberRows,
-  { legend = [], title = '', interpolate = INTERPOLATE } = {},
+  { legend = [], title = '', markerKind = 'bus', interpolate = INTERPOLATE } = {},
 ) {
   const rows = (memberRows || []).filter(
     (r) => Number.isFinite(r?.lat) && Number.isFinite(r?.lon) && Number.isFinite(r?.ts),
@@ -69,6 +69,7 @@ async function captureCrossBunchingVideo(
       await renderCrossFrame(view, baseMap, frames[i], {
         legend,
         title,
+        markerKind,
         clock: { elapsedSec: (times[i] - startTs) / 1000, totalSec },
       }),
     );

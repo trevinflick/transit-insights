@@ -185,7 +185,7 @@ async function main() {
 
   let image;
   try {
-    image = await renderCrossBunchingMap({ points, legend, title: mapTitle });
+    image = await renderCrossBunchingMap({ points, legend, title: mapTitle, markerKind: 'bus' });
   } catch (e) {
     console.warn(`Map render failed (${e.message}); will post text-only`);
     image = null;
@@ -257,7 +257,11 @@ async function main() {
           label: String(labels.get(o.vid) ?? '?'),
           groupIndex: groupIndexByRoute.get(routeByVid.get(String(o.vid))) ?? 0,
         }));
-      const video = await captureCrossBunchingVideo(videoRows, { legend, title: mapTitle });
+      const video = await captureCrossBunchingVideo(videoRows, {
+        legend,
+        title: mapTitle,
+        markerKind: 'bus',
+      });
       if (!video) {
         console.log('Timelapse history produced <2 frames, skipping reply');
         return;
