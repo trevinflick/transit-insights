@@ -133,6 +133,28 @@ Radius defaults: **660 ft** bus (~an intersection + its approaches), **1,500 ft*
 train (station + platform approach). Clusters rank most-vehicles-first,
 tie-break tightest span.
 
+### Layover gate (bus)
+
+Rail stations double as bus terminals (Midway, 95th/Dan Ryan, Jefferson Park, …)
+where several routes lay over between trips — e.g. 47 + 55 + 63 all terminate at
+**Midway**. Those parked buses pass all three gates above and read as a
+multi-route pileup, so the bus bin tags **layover buses and drops them before
+clustering** (`detectCrossRouteBunches` accepts a `layoverIds` set;
+`findLayoverVids` builds it). A parked bus is a layover when its `pdist` sits
+within `LAYOVER_TERMINAL_FT` (750 ft) of either end of its pattern
+(`isAtTerminal`) — i.e. it's at a start- or end-of-run terminal. Only **parked**
+buses are eligible, so a bus driving through a terminal on a live run is
+unaffected.
+
+> **Why no "near an 'L' station" signal?** MARTA can tag buses at a rail-station
+> bay by stop name, but the CTA equivalent — proximity to any train station —
+> isn't safe here: downtown 'L' stations are 30–400 ft apart, so a station-radius
+> tag would blanket the entire Loop and suppress legitimate downtown bunching.
+> Even deriving "hub" stations from where bus patterns terminate leaks downtown
+> stops (Washington/Wabash, Clark/Lake, Quincy …) that are genuine bus terminals.
+> The pattern-terminal test is the precise, safe signal: a Loop bus stuck in
+> traffic is mid-pattern, not at a terminal, so it survives.
+
 ### Posting & the place key
 
 The bins (`bin/{bus,train}/cross-bunching.js`) post to the bus / train account

@@ -1,6 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { detectCrossRouteBunches, groupByRoute } = require('../../src/bus/crossBunching');
+const {
+  detectCrossRouteBunches,
+  groupByRoute,
+  isAtTerminal,
+  LAYOVER_TERMINAL_FT,
+} = require('../../src/bus/crossBunching');
 const { bus, FRESH } = require('../helpers');
 
 const FT_PER_MILLIDEG_LAT = 365;
@@ -61,6 +66,27 @@ test('drops stale fixes outside the freshness window', () => {
     at('c', '8', 400, { tmstmp: FRESH - 5 * 60 * 1000 }),
   ];
   assert.equal(detectCrossRouteBunches(vs, { now: FRESH }).length, 0);
+});
+
+test('layover gate: drops tagged buses before clustering', () => {
+  const vs = [at('a', '22', 0), at('b', '36', 200), at('c', '8', 400)];
+  // a + c laying over → only #36 remains → single-route → no post.
+  assert.equal(
+    detectCrossRouteBunches(vs, { now: FRESH, layoverIds: new Set(['a', 'c']) }).length,
+    0,
+  );
+  // Untagged, the same set posts.
+  assert.equal(detectCrossRouteBunches(vs, { now: FRESH }).length, 1);
+});
+
+test('isAtTerminal flags positions within margin of either pattern end', () => {
+  const len = 10000;
+  assert.equal(isAtTerminal(100, len), true); // near start
+  assert.equal(isAtTerminal(len - 100, len), true); // near end
+  assert.equal(isAtTerminal(5000, len), false); // mid-route
+  assert.equal(isAtTerminal(LAYOVER_TERMINAL_FT + 1, len), false); // just past the start zone
+  assert.equal(isAtTerminal(Number.NaN, len), false);
+  assert.equal(isAtTerminal(100, 0), false); // degenerate pattern
 });
 
 test('groupByRoute numbers buses across routes, biggest group first', () => {

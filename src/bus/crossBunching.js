@@ -11,16 +11,36 @@ const MIN_VEHICLES = 3; // a pileup, not just one bus meeting another
 const MIN_ROUTES = 2; // the whole point: distinct routes, else regular bunching catches it
 const MIN_STOPPED = 2; // congestion evidence — real pileup, not vehicles crossing in motion
 const STALE_MS = 3 * 60 * 1000;
+// Layover zone — a bus sitting at the start/end of its pattern is between trips,
+// not pinned in street traffic. Several routes lay over together at the same
+// transit center (e.g. Midway, where 47/55/63 all terminate), which otherwise
+// reads as a multi-route "pileup". The bin tags these (parked AND at a terminal)
+// as layoverIds; we drop them before clustering. (CTA omits a "near any 'L'
+// station" signal — downtown stations are 30–400 ft apart, so it would blanket
+// the Loop; see bin/bus/cross-bunching.js.)
+const LAYOVER_TERMINAL_FT = 750; // distance from a pattern end to count as "at the terminal"
+
+// A position is "at the terminal" when its pdist sits within marginFt of either
+// end of its pattern (start-of-run or end-of-run layover). Pure; lengthFt is the
+// pattern's total length in feet.
+function isAtTerminal(pdistFt, lengthFt, marginFt = LAYOVER_TERMINAL_FT) {
+  if (!Number.isFinite(pdistFt) || !Number.isFinite(lengthFt) || lengthFt <= 0) return false;
+  return pdistFt <= marginFt || pdistFt >= lengthFt - marginFt;
+}
 
 // `vehicles` carry { vid, route, lat, lon, tmstmp }. `stoppedIds` is a Set of
 // vids the caller has confirmed barely-moving (findParkedBusVids) — the
 // congestion gate. Omit it to detect on geometry alone (tests / diagnostics).
+// `layoverIds` is a Set of vids the caller classified as laying over (parked at
+// a pattern terminal); they're dropped before clustering so a knot of routes
+// resting at a transit center doesn't read as a street pileup.
 // Returns clusters best-first: most vehicles, tie-break tightest span.
 function detectCrossRouteBunches(
   vehicles,
   {
     now = Date.now(),
     stoppedIds = null,
+    layoverIds = null,
     radiusFt = CROSS_RADIUS_FT,
     minVehicles = MIN_VEHICLES,
     minRoutes = MIN_ROUTES,
@@ -34,7 +54,8 @@ function detectCrossRouteBunches(
       Number.isFinite(v?.lat) &&
       Number.isFinite(v?.lon) &&
       Number.isFinite(ts) &&
-      nowMs - ts < STALE_MS
+      nowMs - ts < STALE_MS &&
+      !layoverIds?.has(v.vid)
     );
   });
 
@@ -99,8 +120,10 @@ function groupByRoute(cluster) {
 module.exports = {
   detectCrossRouteBunches,
   groupByRoute,
+  isAtTerminal,
   CROSS_RADIUS_FT,
   MIN_VEHICLES,
   MIN_ROUTES,
   MIN_STOPPED,
+  LAYOVER_TERMINAL_FT,
 };

@@ -11,7 +11,11 @@ const argv = require('minimist')(process.argv.slice(2));
 
 const { getVehiclesCachedOrFresh } = require('../../src/bus/api');
 const { allRoutes: bunchingRoutes } = require('../../src/bus/routes');
-const { detectCrossRouteBunches, groupByRoute } = require('../../src/bus/crossBunching');
+const {
+  detectCrossRouteBunches,
+  groupByRoute,
+  isAtTerminal,
+} = require('../../src/bus/crossBunching');
 const { findParkedBusVids, PARKED_WINDOW_MS } = require('../../src/bus/bunching');
 const { getRecentBusObservationsByRoute } = require('../../src/shared/observations');
 const { loadPattern } = require('../../src/bus/patterns');
@@ -37,6 +41,37 @@ const VIDEO_WINDOW_MS = 10 * 60 * 1000; // history window for the timelapse repl
 
 function placeKeyFor(centroid) {
   return `${centroid.lat.toFixed(3)},${centroid.lon.toFixed(3)}`;
+}
+
+// Layover gate: a parked bus sitting at its pattern terminal (start-of-run or
+// end-of-run) is between trips, not stuck in traffic — and several routes lay
+// over together at the same transit center (e.g. Midway, where 47/55/63 all
+// terminate), which otherwise reads as a multi-route street pileup. Returns the
+// subset of `vehicles` (vids) to drop before clustering. Pattern lengths come
+// from the cached pattern loader; lookups are memoized per pid.
+//
+// Unlike MARTA, we deliberately do NOT add a "near any 'L' station" signal:
+// downtown 'L' stations are 30–400 ft apart, so a proximity tag would blanket
+// the Loop and suppress legitimate downtown bunching. The pattern-terminal test
+// is the safe, precise signal — a Loop bus stuck in traffic is mid-pattern, not
+// at a terminal, so it survives.
+async function findLayoverVids(vehicles, stoppedIds) {
+  const lenByPid = new Map();
+  const layoverIds = new Set();
+  for (const v of vehicles) {
+    if (!stoppedIds.has(v.vid) || !v.pid || v.pdist == null) continue;
+    if (!lenByPid.has(v.pid)) {
+      let len = null;
+      try {
+        len = (await loadPattern(v.pid)).lengthFt;
+      } catch {
+        len = null;
+      }
+      lenByPid.set(v.pid, len);
+    }
+    if (isAtTerminal(parseFloat(v.pdist), lenByPid.get(v.pid))) layoverIds.add(v.vid);
+  }
+  return layoverIds;
 }
 
 // Name the pileup by the nearest stop across the involved routes' patterns
@@ -125,7 +160,11 @@ async function main() {
     for (const vid of findParkedBusVids(rows)) stoppedIds.add(vid);
   }
 
-  const clusters = detectCrossRouteBunches(vehicles, { now: nowMs, stoppedIds });
+  const layoverIds = await findLayoverVids(vehicles, stoppedIds);
+  if (layoverIds.size > 0)
+    console.log(`Excluding ${layoverIds.size} layover bus(es) at terminals/bays`);
+
+  const clusters = detectCrossRouteBunches(vehicles, { now: nowMs, stoppedIds, layoverIds });
   if (!argv['dry-run']) {
     const closed = history.reconcileBunchingEvents
       ? history.reconcileBunchingEvents({
