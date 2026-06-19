@@ -4,7 +4,9 @@ const {
   detectCrossRouteBunches,
   groupByRoute,
   isAtTerminal,
+  isAtPulseHub,
   LAYOVER_TERMINAL_FT,
+  PULSE_HUBS,
 } = require('../../src/bus/crossBunching');
 const { bus, FRESH } = require('../helpers');
 
@@ -87,6 +89,33 @@ test('isAtTerminal flags positions within margin of either pattern end', () => {
   assert.equal(isAtTerminal(LAYOVER_TERMINAL_FT + 1, len), false); // just past the start zone
   assert.equal(isAtTerminal(Number.NaN, len), false);
   assert.equal(isAtTerminal(100, 0), false); // degenerate pattern
+});
+
+test('isAtPulseHub: true within radius of a known hub, false outside', () => {
+  const hubs = [{ lat: 39.965, lon: -83.002, radiusFt: 1000 }];
+  assert.equal(isAtPulseHub({ lat: 39.965, lon: -83.002 }, hubs), true);
+  assert.equal(isAtPulseHub({ lat: 39.9655, lon: -83.0025 }, hubs), true); // nearby, within radius
+  assert.equal(isAtPulseHub({ lat: 39.99, lon: -83.002 }, hubs), false); // ~8800 ft away
+});
+
+// Real COTA pattern: every hour on the hour, most of the network converges at
+// N High St & W Long St for a scheduled transfer — not unplanned congestion.
+// A cluster centered there must never count as a cross-route pileup, even
+// though it otherwise clears every other gate (vehicles, routes, congestion).
+test('pulse-hub gate: a cluster centered on the downtown transfer point is excluded', () => {
+  const hubLat = PULSE_HUBS[0].lat;
+  const hubLon = PULSE_HUBS[0].lon;
+  const vs = [
+    bus({ vid: 'a', route: '001', pid: 'p1', lat: hubLat, lon: hubLon }),
+    bus({ vid: 'b', route: '002', pid: 'p2', lat: hubLat + 0.0005, lon: hubLon }),
+    bus({ vid: 'c', route: '008', pid: 'p8', lat: hubLat - 0.0005, lon: hubLon }),
+  ];
+  assert.equal(detectCrossRouteBunches(vs, { now: FRESH }).length, 0);
+});
+
+test('pulse-hub gate: a cluster elsewhere downtown still fires normally', () => {
+  const vs = [at('a', '22', 0), at('b', '36', 200), at('c', '8', 400)];
+  assert.equal(detectCrossRouteBunches(vs, { now: FRESH }).length, 1);
 });
 
 test('groupByRoute numbers buses across routes, biggest group first', () => {

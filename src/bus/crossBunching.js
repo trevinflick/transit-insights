@@ -5,12 +5,29 @@
 // geography (lat/lon) across ALL routes, then require the cluster to span 2+
 // routes and show congestion.
 const { clusterByProximity, clusterStats } = require('../shared/geoClusters');
+const { haversineFt } = require('../shared/geo');
 
 const CROSS_RADIUS_FT = 660; // ~2 city blocks — an intersection + its approaches
 const MIN_VEHICLES = 3; // a pileup, not just one bus meeting another
 const MIN_ROUTES = 2; // the whole point: distinct routes, else regular bunching catches it
 const MIN_STOPPED = 2; // congestion evidence — real pileup, not vehicles crossing in motion
 const STALE_MS = 3 * 60 * 1000;
+
+// Known timed-transfer "pulse" points: COTA converges most of the network at
+// the same downtown stop near the top of every hour so riders can transfer
+// between routes — confirmed from real cron history (firings at 06:00, 07:00,
+// 08:00, 09:00… every hour on the hour, same ~10-route core, same spot). That's
+// scheduled service, not unplanned congestion, so a cluster centered on a known
+// hub never counts as a cross-route pileup. Add more entries if another hub
+// turns up the same pattern elsewhere in the network.
+const PULSE_HUBS = [
+  { lat: 39.965, lon: -83.002, radiusFt: 1000 }, // N High St & W Long St, downtown
+];
+
+// True when a cluster's centroid sits within a known pulse hub's radius.
+function isAtPulseHub(centroid, hubs = PULSE_HUBS) {
+  return hubs.some((h) => haversineFt(centroid, h) <= h.radiusFt);
+}
 // Layover zone — a bus sitting at the start/end of its pattern is between trips,
 // not pinned in street traffic. Several routes lay over together at the same
 // transit center (e.g. Midway, where 47/55/63 all terminate), which otherwise
@@ -64,6 +81,7 @@ function detectCrossRouteBunches(
     if (members.length < minVehicles) continue;
     const { spanFt, routes, centroid } = clusterStats(members, { routeKey: (v) => v.route });
     if (routes.size < minRoutes) continue;
+    if (isAtPulseHub(centroid)) continue;
     if (stoppedIds) {
       const stopped = members.filter((v) => stoppedIds.has(v.vid)).length;
       if (stopped < minStopped) continue;
@@ -121,9 +139,11 @@ module.exports = {
   detectCrossRouteBunches,
   groupByRoute,
   isAtTerminal,
+  isAtPulseHub,
   CROSS_RADIUS_FT,
   MIN_VEHICLES,
   MIN_ROUTES,
   MIN_STOPPED,
   LAYOVER_TERMINAL_FT,
+  PULSE_HUBS,
 };
