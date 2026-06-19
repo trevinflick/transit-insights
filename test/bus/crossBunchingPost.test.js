@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { detectCrossRouteBunches } = require('../../src/bus/crossBunching');
 const { buildPostText, buildAltText } = require('../../src/bus/crossBunchingPost');
+const { graphemeLength, POST_MAX_CHARS } = require('../../src/shared/post');
 const { bus, FRESH } = require('../helpers');
 
 const FT_PER_MILLIDEG_LAT = 365;
@@ -35,4 +36,32 @@ test('alt text lists the routes and span', () => {
   const alt = buildAltText(cluster, { placeName: 'X & Y' });
   assert.match(alt, /Route 22/);
   assert.match(alt, /3 buses from 3 routes/);
+});
+
+// A downtown convergence of many routes (real COTA case: 20 buses / 11 routes
+// at once near High & Broad) used to list every bus on every route and blow
+// past Bluesky's 300-grapheme cap, crashing the post call outright instead
+// of posting. buildPostText must always stay under the cap, keeping the
+// biggest groups and summarizing the rest.
+test('buildPostText truncates a large multi-route cluster instead of exceeding the post limit', () => {
+  const routes = ['001', '002', '003', '004', '005', '007', '008', '009', '010', '011', '102'];
+  const vehicles = [];
+  let vid = 1000;
+  for (let i = 0; i < 20; i++)
+    vehicles.push({ vid: String(vid++), route: routes[i % routes.length] });
+  const cluster = { vehicles, routes, routeCount: routes.length, spanFt: 800 };
+  const text = buildPostText(cluster, { placeName: 'High Street & Broad Street' }, [
+    'biggest pileup in 30 days',
+  ]);
+  assert.ok(graphemeLength(text) <= POST_MAX_CHARS);
+  assert.match(text, /…and \d+ more routes?/);
+  assert.match(text, /20 buses from 11 routes bunched/);
+  assert.match(text, /📊 biggest pileup in 30 days/);
+});
+
+test('buildPostText does not truncate a cluster that already fits', () => {
+  const vs = [at('a', '22', 0), at('b', '36', 200), at('c', '8', 400)];
+  const [cluster] = detectCrossRouteBunches(vs, { now: FRESH });
+  const text = buildPostText(cluster, { placeName: 'X & Y' }, []);
+  assert.doesNotMatch(text, /…and/);
 });

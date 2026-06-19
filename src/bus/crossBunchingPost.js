@@ -5,6 +5,7 @@ const { routeTitle, routeLabel: routeShortLabel } = require('./routes');
 const { groupByRoute } = require('./crossBunching');
 const { formatCallouts } = require('../shared/history');
 const { formatDistance, keycapNumber } = require('../shared/format');
+const { graphemeLength, POST_MAX_CHARS } = require('../shared/post');
 
 // Kept as `routeLabel` for external callers (bin/bus/cross-bunching.js's map
 // legend) — delegates to the shared full-title formatter.
@@ -13,21 +14,38 @@ function routeLabel(route) {
 }
 
 // `ctx` = { placeName }. Returns the primary post text.
+//
+// A downtown convergence (most routes pass within a couple blocks of each
+// other near a hub) can stack 10+ routes into one cluster — listing every
+// bus on every route then blows past Bluesky's 300-grapheme cap and the post
+// call throws, silently dropping a real pileup. byRoute is already
+// most-vehicles-first (groupByRoute), so on overflow we keep that prefix and
+// summarize the rest, mirroring buildRollupPost's truncation in shared/post.js.
 function buildPostText(cluster, ctx, callouts = []) {
   const { placeName } = ctx;
   const { byRoute } = groupByRoute(cluster);
   const where = placeName ? ` near ${placeName}` : '';
   const routeCount = byRoute.length;
   const head = `🚍 ${cluster.vehicles.length} buses from ${routeCount} routes bunched${where}`;
-  const lines = byRoute
-    .map((g) => {
-      const list = g.vids.map((x) => `#${x.vid} (${keycapNumber(x.n)})`).join(', ');
-      return `${routeLabel(g.route)}: ${list}`;
-    })
-    .join('\n');
-  const base = `${head}\n\n${lines}`;
+  const lines = byRoute.map((g) => {
+    const list = g.vids.map((x) => `#${x.vid} (${keycapNumber(x.n)})`).join(', ');
+    return `${routeLabel(g.route)}: ${list}`;
+  });
   const tail = formatCallouts(callouts);
-  return tail ? `${base}\n\n${tail}` : base;
+  const tailSuffix = tail ? `\n\n${tail}` : '';
+
+  for (let k = lines.length; k >= 0; k--) {
+    const dropped = lines.length - k;
+    const body =
+      dropped === 0
+        ? lines.join('\n')
+        : k === 0
+          ? `…and ${dropped} more route${dropped === 1 ? '' : 's'}`
+          : `${lines.slice(0, k).join('\n')}\n…and ${dropped} more route${dropped === 1 ? '' : 's'}`;
+    const text = `${head}\n\n${body}${tailSuffix}`;
+    if (graphemeLength(text) <= POST_MAX_CHARS) return text;
+  }
+  return `${head}${tailSuffix}`;
 }
 
 function buildAltText(cluster, ctx) {
