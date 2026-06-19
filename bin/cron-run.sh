@@ -11,14 +11,34 @@ shift 2
 LOG=cron/$NAME-cron.log
 printf "\n\n=== $(date) $NAME ===\n" >> "$LOG"
 
+# Resolve node's absolute path — cron runs with a minimal PATH that won't
+# include Homebrew's bin dirs, so a bare `node` call fails silently under
+# cron even when it works fine in an interactive shell. Checks the common
+# install locations across platforms (Linux package managers put it at
+# /usr/bin, Homebrew on Apple Silicon at /opt/homebrew, Intel Homebrew at
+# /usr/local) plus whatever PATH resolves to when this script is run
+# interactively, with NODE_BIN as an escape hatch for anything unusual.
+if [ -z "${NODE_BIN:-}" ]; then
+  for candidate in /usr/bin/node /opt/homebrew/bin/node /usr/local/bin/node "$(command -v node 2>/dev/null)"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      NODE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "${NODE_BIN:-}" ]; then
+  echo "cron-run.sh: could not find a node binary (checked /usr/bin, /opt/homebrew/bin, /usr/local/bin, PATH) — set NODE_BIN explicitly" >> "$LOG"
+  exit 1
+fi
+
 # healthchecks.io monitoring (optional). Only the slugs in HC_MONITORED ping
-# (and thus auto-create a check); the curated set keeps us under the 20-check
-# free tier and is the committed source of truth for "what's watched" — edit it
-# here and `git pull` on the server to widen/narrow coverage. Jobs not listed
-# simply don't ping. (push-web-data isn't run via this wrapper; it pings from
-# its own script.) No-op entirely unless cron/healthchecks.env exists (see the
-# .example).
-HC_MONITORED="observe-buses observe-trains bus-alerts bus-pulse train-alerts train-pulse bus-bunching bus-gaps bus-ghosts bus-thin-gaps train-bunching train-gaps train-ghosts bus-speedmap train-speedmap fetch-gtfs audit-alerts export-event-tracks"
+# (and thus auto-create a check); the curated set is the committed source of
+# truth for "what's watched" — edit it here and `git pull` on the server to
+# widen/narrow coverage. Jobs not listed simply don't ping. No-op entirely
+# unless cron/healthchecks.env exists (see the .example). Single-agency
+# bus-only roster (9 jobs) — comfortably under the 20-check free tier, so
+# everything except the low-stakes weekly/monthly recap is watched.
+HC_MONITORED="observe-buses bus-cross-bunching bus-bunching bus-gaps bus-thin-gaps bus-ghosts bus-speedmap fetch-gtfs audit-alerts"
 [ -f cron/healthchecks.env ] && . cron/healthchecks.env
 case " $HC_MONITORED " in *" $NAME "*) hc_watched=1 ;; *) hc_watched= ;; esac
 
@@ -38,7 +58,7 @@ hc_ping() {
 # still sends the completion ping instead of aborting the wrapper before it.
 hc_ping start
 set +e
-/usr/bin/node "$SCRIPT" "$@" >> "$LOG" 2>&1
+"$NODE_BIN" "$SCRIPT" "$@" >> "$LOG" 2>&1
 rc=$?
 hc_ping "$rc"
 

@@ -1,147 +1,174 @@
 const axios = require('axios');
+const GtfsRt = require('gtfs-realtime-bindings');
 const { recordBusObservations, getLatestBusSnapshot } = require('../shared/observations');
 const { withRetry } = require('../shared/retry');
+const { getTripMeta, getShapePoints } = require('../shared/gtfs');
+const { bearing } = require('../shared/geo');
+const { projectOntoShape } = require('./shapeProjection');
 
-const BUS_BASE = 'https://www.ctabustracker.com/bustime/api/v3';
+// COTA GTFS-realtime feeds. Protocol Buffers (GTFS-rt v2.0), public and
+// unauthenticated (confirmed live — no api key/token needed), refreshed
+// roughly every 30s server-side (Vontas TransitMaster).
+const BASE = 'https://gtfs-rt.cota.vontascloud.com/TMGTFSRealTimeWebService';
 
-async function get(endpoint, params) {
+const { transit_realtime } = GtfsRt;
+const FeedMessage = transit_realtime.FeedMessage;
+
+async function fetchFeed(path) {
   const { data } = await withRetry(
     () =>
-      axios.get(`${BUS_BASE}/${endpoint}`, {
-        params: { key: process.env.CTA_BUS_KEY, format: 'json', ...params },
+      axios.get(`${BASE}/${path}`, {
+        responseType: 'arraybuffer',
         timeout: 15000,
       }),
-    { label: `CTA bus ${endpoint}` },
+    { label: `COTA ${path}` },
   );
-  const body = data['bustime-response'];
-  if (body.error) {
-    // "No data found" just means a route has no active vehicles (e.g. express
-    // routes off-peak); other routes in the batch still return data.
-    const errors = Array.isArray(body.error) ? body.error : [body.error];
-    const fatal = errors.filter((e) => !/no data found/i.test(e.msg || ''));
-    const benign = errors.filter((e) => /no data found/i.test(e.msg || ''));
-    if (benign.length > 0) {
-      console.log(`CTA ${endpoint}: no data for ${benign.map((e) => e.rt).join(', ')}`);
-    }
-    if (fatal.length > 0) {
-      throw new Error(`CTA ${endpoint}: ${JSON.stringify(fatal)}`);
-    }
-  }
-  return body;
+  return FeedMessage.decode(new Uint8Array(data));
 }
 
-function parseVehicle(v) {
+// protobufjs decodes 64-bit fields as Long objects; everything downstream
+// wants plain numbers (epoch seconds). Null-safe.
+function longToNum(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return v;
+  if (typeof v.toNumber === 'function') return v.toNumber();
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
+// "HH:MM:SS" (may exceed 24h for an owl trip) → seconds since service-day
+// midnight. Matches what CTA's `stst` meant: the trip's first-stop departure
+// time, which scheduleDeviationMin joins against schedule.sqlite's start_sec.
+function parseGtfsStartTime(s) {
+  if (!s) return null;
+  const parts = s.split(':').map((x) => parseInt(x, 10));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  const [h, m, sec] = parts;
+  return h * 3600 + m * 60 + sec;
+}
+
+// Resolves a GTFS-realtime VehiclePosition entity into the same shape
+// CTA's BusTime parseVehicle() produced, so src/bus/{bunching,gaps,ghosts,
+// speedmap}.js need zero changes. COTA's realtime trip_id/route_id match the
+// static schedule exactly (confirmed against a live sample — no suffix
+// mismatch to normalize, unlike Metra), but the realtime direction_id does
+// NOT reliably match the static schedule's for the same trip (observed 7
+// live vs 1 static for the same trip_id) — direction and shape (for pdist)
+// are therefore always resolved via the trip_id → static lookup
+// (getTripMeta), never trusted off the live feed.
+function parseVehicle(entity) {
+  const v = entity.vehicle;
+  if (!v) return null;
+  const trip = v.trip || {};
+  const pos = v.position || {};
+  const tripId = trip.tripId != null ? String(trip.tripId) : null;
+  const meta = tripId ? getTripMeta(tripId) : null;
+  const lat = Number.isFinite(pos.latitude) ? pos.latitude : null;
+  const lon = Number.isFinite(pos.longitude) ? pos.longitude : null;
+  const shapeId = meta?.shapeId ?? null;
+
+  let pdist = null;
+  if (shapeId != null && lat != null && lon != null) {
+    const shapePoints = getShapePoints(String(shapeId));
+    const proj = shapePoints ? projectOntoShape(lat, lon, shapePoints) : null;
+    if (proj) pdist = proj.distFt;
+  }
+
+  const ts = longToNum(v.timestamp);
   return {
-    vid: v.vid,
-    route: v.rt,
-    // Stringified to match what the snapshot cache returns from SQLite, so
-    // strict-equality filters (e.g. bunchingVideo's pid match) work whether
-    // the caller hit the cache or a fresh API call.
-    pid: v.pid != null ? String(v.pid) : null,
-    lat: parseFloat(v.lat),
-    lon: parseFloat(v.lon),
-    heading: parseInt(v.hdg, 10),
-    pdist: v.pdist,
-    destination: v.des,
-    delayed: v.dly,
-    // Schedule anchor: `stst` is the trip's scheduled start as seconds since
-    // midnight of its service day, `stsd` the service date (YYYY-MM-DD). Together
-    // with `route` they identify the exact GTFS trip this bus is running (its
-    // first-stop departure_time == stst), which is what schedule-adherence
-    // (scheduleDeviationMin) keys off of. `tatripid` is CTA's internal trip id —
-    // captured for completeness but NOT a GTFS trip_id (no direct join).
-    schedStartSec: v.stst != null && v.stst !== '' ? Number(v.stst) : null,
-    schedStartDate: v.stsd || null,
-    tatripid: v.tatripid != null ? String(v.tatripid) : null,
-    tmstmp: parseBusTime(v.tmstmp),
+    vid: v.vehicle?.id ?? null,
+    route: meta?.route ?? (trip.routeId != null ? String(trip.routeId) : null),
+    pid: shapeId != null ? String(shapeId) : null,
+    lat,
+    lon,
+    heading: Number.isFinite(pos.bearing) ? pos.bearing : null,
+    pdist,
+    schedStartSec: parseGtfsStartTime(trip.startTime),
+    tmstmp: ts != null ? new Date(ts * 1000) : null,
   };
 }
 
-// Resolves CTA's "20260415 15:52:13" America/Chicago wall-time strings to UTC
-// without a tz library by round-tripping through Intl.DateTimeFormat.
-function parseBusTime(s) {
-  const [d, t] = s.split(' ');
-  const y = +d.slice(0, 4),
-    mo = +d.slice(4, 6),
-    da = +d.slice(6, 8);
-  const [h, mi, se] = t.split(':').map(Number);
-  const utcGuess = Date.UTC(y, mo - 1, da, h, mi, se);
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(utcGuess));
-  const get = (k) => +parts.find((p) => p.type === k).value;
-  const seenAsUtc = Date.UTC(
-    get('year'),
-    get('month') - 1,
-    get('day'),
-    get('hour'),
-    get('minute'),
-    get('second'),
-  );
-  const offset = utcGuess - seenAsUtc;
-  return new Date(utcGuess + offset);
-}
-
 async function getVehicles(routes, { record = true } = {}) {
-  if (routes.length === 0) return [];
-  // API caps at 10 routes per call.
-  const chunks = [];
-  for (let i = 0; i < routes.length; i += 10) chunks.push(routes.slice(i, i + 10));
-
-  const results = [];
-  for (const chunk of chunks) {
-    const body = await get('getvehicles', { rt: chunk.join(','), tmres: 's' });
-    for (const v of body.vehicle || []) results.push(parseVehicle(v));
-  }
-  // Single-route diagnostic fetches (timelapse, speedmap) pass record:false so
-  // they don't pollute getLatestBusSnapshot's MAX(ts) with a partial-route tick.
+  const feed = await fetchFeed('Vehicle/VehiclePositions.pb');
+  const routeSet = routes?.length ? new Set(routes.map(String)) : null;
+  const results = (feed.entity || [])
+    .map(parseVehicle)
+    .filter((v) => v?.vid != null && v.route != null && (!routeSet || routeSet.has(v.route)));
   if (record) recordBusObservations(results);
   return results;
 }
 
+const CARDINAL_BOUNDS = ['Northbound', 'Eastbound', 'Southbound', 'Westbound'];
+// Buckets a bearing (0=N, 90=E, 180=S, 270=W) into the nearest cardinal
+// "-bound" label — the only vocabulary post text expects (bin/bus/ghosts.js's
+// abbreviateDirection matches /(North|South|East|West)bound/i; COTA has no
+// intercardinal-only patterns that would need finer buckets).
+function cardinalBound(brg) {
+  const idx = Math.round((((brg % 360) + 360) % 360) / 90) % 4;
+  return CARDINAL_BOUNDS[idx];
+}
+
+// COTA's shapes are static — sourced from the precomputed index
+// (scripts/fetch-gtfs.js), not a live API call like CTA's getpatterns.
+// `pid` is the GTFS shape_id. The shape's own point list already carries
+// named-stop entries (type 'S') merged in at index-build time — see
+// fetch-gtfs.js — matching CTA's pattern.points contract closely enough for
+// patterns.js#findNearestStop and the bunching/gap "near stop" text.
 async function getPattern(pid) {
-  const body = await get('getpatterns', { pid });
-  const ptr = body.ptr?.[0];
-  if (!ptr) throw new Error(`No pattern returned for pid ${pid}`);
+  const shapePoints = getShapePoints(String(pid));
+  if (!shapePoints || shapePoints.length < 2) {
+    throw new Error(`No shape found for pid ${pid}`);
+  }
+  const direction = cardinalBound(bearing(shapePoints[0], shapePoints[shapePoints.length - 1]));
   return {
-    pid: ptr.pid,
-    direction: ptr.rtdir,
-    lengthFt: ptr.ln,
-    points: ptr.pt.map((p) => ({
-      seq: p.seq,
+    pid: String(pid),
+    direction,
+    lengthFt: shapePoints[shapePoints.length - 1].distFt,
+    points: shapePoints.map((p, seq) => ({
+      seq,
       lat: p.lat,
       lon: p.lon,
-      type: p.typ,
-      stopId: p.stpid,
-      stopName: p.stpnm,
-      pdist: p.pdist,
+      type: p.type,
+      stopId: p.stopId,
+      stopName: p.stopName,
+      pdist: p.distFt,
     })),
   };
 }
 
-// `prdctdn` is a string and may be "DUE" or "DLY" rather than a number.
-async function getPredictions({ stpid, vid, rt, top }) {
-  const params = {};
-  if (stpid) params.stpid = Array.isArray(stpid) ? stpid.join(',') : stpid;
-  if (vid) params.vid = Array.isArray(vid) ? vid.join(',') : vid;
-  if (rt) params.rt = Array.isArray(rt) ? rt.join(',') : rt;
-  if (top) params.top = top;
-  const body = await get('getpredictions', params);
-  return body.prd || [];
+// COTA's nearest equivalent to CTA's single-stop countdown predictions
+// (`prdctdn`, "DUE" or minutes) is TripUpdates.pb's per-stop predicted
+// arrival times for the vehicle's current trip. Returns the same
+// `{ stpid, prdctdn }` shape bin/bus/gaps.js already parses ("DUE" or a
+// whole-minute countdown string). Pure given a decoded feed; exported for
+// fixture-based unit tests.
+function predictionsFromFeed(feed, vid, now = Date.now()) {
+  const entity = (feed.entity || []).find(
+    (e) => e.tripUpdate?.vehicle?.id != null && String(e.tripUpdate.vehicle.id) === String(vid),
+  );
+  const stopTimeUpdate = entity?.tripUpdate?.stopTimeUpdate || [];
+  return stopTimeUpdate
+    .map((s) => {
+      const predictedSec = longToNum(s.arrival?.time ?? s.departure?.time);
+      if (predictedSec == null || s.stopId == null) return null;
+      const minutes = Math.round((predictedSec * 1000 - now) / 60000);
+      return { stpid: String(s.stopId), prdctdn: minutes <= 1 ? 'DUE' : String(minutes) };
+    })
+    .filter(Boolean);
 }
 
-// Returns `{ vehicles, now, source }`. The default 90s maxStaleMs is
-// sized to cover the 60s observeBuses cadence — bunching/gaps/pulse
-// always hit the cache, so observeBuses is the only API call site for the
-// "all routes" workload. The per-vehicle 3-min staleness gate inside the
-// detectors still drops individual stale buses.
+async function getPredictions({ vid }) {
+  if (!vid) return [];
+  const feed = await fetchFeed('TripUpdate/TripUpdates.pb');
+  return predictionsFromFeed(feed, vid);
+}
+
+// Returns `{ vehicles, now, source }`. COTA's GTFS-realtime feeds are public
+// and unauthenticated (no daily-request cap like CTA's BusTime, so the cache
+// here is about avoiding redundant decodes within a tick, not quota
+// protection). The default 90s maxStaleMs covers the ~60s observe-buses
+// cadence — bunching/gaps/pulse all hit the cache, so observe-buses is the
+// only poll site for the all-routes workload.
 async function getVehiclesCachedOrFresh(routes, { maxStaleMs = 90 * 1000 } = {}) {
   const cached = getLatestBusSnapshot(routes, maxStaleMs);
   if (cached && cached.vehicles.length > 0) {
@@ -156,5 +183,9 @@ module.exports = {
   getVehiclesCachedOrFresh,
   getPattern,
   getPredictions,
-  parseBusTime,
+  parseVehicle,
+  // Exposed for unit tests.
+  cardinalBound,
+  parseGtfsStartTime,
+  predictionsFromFeed,
 };

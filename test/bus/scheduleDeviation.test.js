@@ -34,10 +34,10 @@ test('keycapNumber renders single and multi-digit positions as keycap emoji', ()
   assert.equal(keycapNumber(13), '1️⃣3️⃣'); // 10+ splits per digit
 });
 
-test('chicagoSecondsOfDay converts a UTC instant to Chicago seconds-of-day', () => {
-  // 15:30:45 UTC in June (CDT, UTC−5) = 10:30:45 local.
+test('chicagoSecondsOfDay converts a UTC instant to Eastern seconds-of-day', () => {
+  // 15:30:45 UTC in June (EDT, UTC−4) = 11:30:45 local.
   const sec = chicagoSecondsOfDay(new Date('2026-06-13T15:30:45Z'));
-  assert.equal(sec, 10 * 3600 + 30 * 60 + 45);
+  assert.equal(sec, 11 * 3600 + 30 * 60 + 45);
 });
 
 test('deviationFromStops interpolates scheduled time at the projection point', () => {
@@ -94,9 +94,9 @@ test('scheduleDeviationMin: vehicle on-route returns + late minutes', (t) => {
   ins.run('79', 36000, 'T2', 1, 41.85, -87.62, 36000);
   ins.run('79', 36000, 'T2', 2, 41.85, -87.6, 36300);
 
-  // Bus at the segment midpoint (scheduled ~36150) observed at 10:05:00 CDT
+  // Bus at the segment midpoint (scheduled ~36150) observed at 10:05:00 EDT
   // (=36300s) → ~2.5 min behind schedule.
-  const now = new Date('2026-06-13T15:05:00Z');
+  const now = new Date('2026-06-13T14:05:00Z');
   const dev = scheduleDeviationMin(
     { route: '79', schedStartSec: 36000, lat: 41.75, lon: -87.61 },
     now,

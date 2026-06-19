@@ -1,289 +1,164 @@
-// Display names keyed by CTA's `rt` value, sourced from the CTA bustime
-// `getroutes` endpoint so every active route is represented — including ones
-// we don't currently poll. Sorted by route number; express/letter variants
-// group with their base number. Extend the bunching/speedmap/gaps/ghosts
-// arrays below to start tracking additional routes without touching this map.
+// Display names keyed by COTA's `route_id` (zero-padded, e.g. "022"), sourced
+// from COTA's published GTFS routes.txt so every active route is represented.
+// Extend the bunching/speedmap/gaps/ghosts arrays below to start tracking
+// additional routes without touching this map.
 const names = {
-  1: 'Bronzeville/Union Station',
-  2: 'Hyde Park Express',
-  3: 'King Drive',
-  4: 'Cottage Grove',
-  X4: 'Cottage Grove Express',
-  N4: 'Cottage Grove Night Bus',
-  N5: 'South Shore Night Bus',
-  6: 'Jackson Park Express',
-  7: 'Harrison',
-  8: 'Halsted',
-  '8A': 'South Halsted',
-  9: 'Ashland',
-  X9: 'Ashland Express',
-  N9: 'Ashland Night Bus',
-  10: 'Obama Presidential Center/Museum of Science & Industry',
-  11: 'Lincoln',
-  12: 'Roosevelt',
-  J14: 'Jeffery Jump',
-  15: 'Jeffery Local',
-  18: '16th-18th',
-  19: 'United Center Express',
-  20: 'Madison',
-  N20: 'Madison Night Bus',
-  21: 'Cermak',
-  22: 'Clark',
-  N22: 'Clark Night Bus',
-  24: 'Wentworth',
-  26: 'South Shore Express',
-  28: 'Stony Island',
-  29: 'State',
-  30: 'South Chicago',
-  31: '31st',
-  34: 'South Michigan',
-  N34: 'South Michigan Night Bus',
-  35: '31st/35th',
-  36: 'Broadway',
-  37: 'Sedgwick',
-  39: 'Pershing',
-  43: '43rd',
-  44: 'Wallace/Racine',
-  47: '47th',
-  48: 'South Damen',
-  49: 'Western',
-  '49B': 'North Western',
-  X49: 'Western Express',
-  N49: 'Western Night Bus',
-  50: 'Damen',
-  51: '51st',
-  52: 'Kedzie',
-  '52A': 'South Kedzie',
-  53: 'Pulaski',
-  '53A': 'South Pulaski',
-  N53: 'Pulaski Night Bus',
-  54: 'Cicero',
-  '54A': 'North Cicero/Skokie Blvd.',
-  '54B': 'South Cicero',
-  55: 'Garfield',
-  '55A': '55th/Austin',
-  '55N': '55th/Narragansett',
-  N55: 'Garfield Night Bus',
-  56: 'Milwaukee',
-  57: 'Laramie',
-  59: '59th/61st',
-  60: 'Blue Island/26th',
-  N60: 'Blue Island/26th Night Bus',
-  62: 'Archer',
-  '62H': 'Archer/Harlem',
-  N62: 'Archer Night Bus',
-  63: '63rd',
-  '63W': 'West 63rd',
-  N63: '63rd Night Bus',
-  65: 'Grand',
-  66: 'Chicago',
-  N66: 'Chicago Night Bus',
-  67: '67th-69th-71st',
-  68: 'Northwest Highway',
-  70: 'Division',
-  71: '71st/South Shore',
-  72: 'North',
-  73: 'Armitage',
-  74: 'Fullerton',
-  75: '74th-75th',
-  76: 'Diversey',
-  77: 'Belmont',
-  N77: 'Belmont Night Bus',
-  78: 'Montrose',
-  79: '79th',
-  N79: '79th Night Bus',
-  80: 'Irving Park',
-  81: 'Lawrence',
-  '81W': 'West Lawrence',
-  N81: 'Lawrence Night Bus',
-  82: 'Kimball-Homan',
-  84: 'Peterson',
-  85: 'Central',
-  '85A': 'North Central',
-  86: 'Narragansett/Ridgeland',
-  87: '87th',
-  N87: '87th Night Bus',
-  88: 'Higgins',
-  90: 'Harlem',
-  91: 'Austin',
-  92: 'Foster',
-  93: 'California/Dodge',
-  94: 'California',
-  95: '95th',
-  96: 'Lunt',
-  97: 'Skokie',
-  100: 'Jeffery Manor Express',
-  103: 'West 103rd',
-  106: 'East 103rd',
-  108: 'Halsted/95th',
-  111: '111th/King Drive',
-  '111A': 'Pullman Shuttle',
-  112: 'Vincennes/111th',
-  115: 'Pullman/115th',
-  119: 'Michigan/119th',
-  120: 'Ogilvie/Streeterville Express',
-  121: 'Union/Streeterville Express',
-  124: 'Navy Pier',
-  125: 'Water Tower Express',
-  126: 'Jackson',
-  128: 'Soldier Field Express',
-  130: 'Museum Campus',
-  134: 'Stockton/LaSalle Express',
-  135: 'Clarendon/LaSalle Express',
-  136: 'Sheridan/LaSalle Express',
-  143: 'Stockton/Michigan Express',
-  146: 'Inner Lake Shore/Michigan Express',
-  147: 'Outer DuSable Lake Shore Express',
-  148: 'Clarendon/Michigan Express',
-  151: 'Sheridan',
-  152: 'Addison',
-  155: 'Devon',
-  156: 'LaSalle',
-  157: 'Streeterville/Taylor',
-  165: 'West 65th',
-  169: '69th/UPS Express',
-  171: 'U. of Chicago/Hyde Park',
-  172: 'U. of Chicago/Kenwood',
-  192: 'U. of Chicago Hospitals Express',
-  201: 'Central/Ridge',
-  206: 'Evanston Circulator',
+  '001': 'Kenny/Livingston',
+  '002': 'E Main/N High',
+  '003': 'Northwest/Harrisburg',
+  '004': 'Indianola/Lockbourne',
+  '005': 'W 5th Ave/Refugee',
+  '006': 'Sullivant',
+  '007': 'Mt Vernon',
+  '008': 'Karl/S High/Parsons',
+  '009': 'W Mound/Brentnell',
+  '010': 'E Broad/W Broad',
+  '011': 'Bryden/Maize',
+  '012': 'McKinley/Fields',
+  '021': 'Hilliard Rome',
+  '022': 'OSU-Rickenbacker',
+  '023': 'James-Stelzer',
+  '024': 'Hamilton Rd',
+  '025': 'Brice',
+  '031': 'Hudson',
+  '032': 'N Broadway',
+  '033': 'Henderson',
+  '034': 'Morse',
+  '035': 'Dublin-Granville',
+  '041': 'Crosswoods-Polaris',
+  '042': 'Sharon Woods',
+  '043': 'Westerville',
+  '044': 'Easton',
+  '045': 'New Albany',
+  '046': 'Gahanna',
+  '051': 'Reynoldsburg',
+  '052': 'Canal Winchester',
+  '061': 'Grove City',
+  '071': 'Hilliard',
+  '072': 'Tuttle',
+  '073': 'Dublin',
+  '074': 'Smoky Row',
+  '075': 'Arlington/1st Ave',
+  101: 'CMAX',
+  102: 'Polaris Pkwy/N High',
+  141: 'Columbus Zoo',
+  152: 'AirConnect',
+  201: 'SmartRide New Albany - Red',
+  202: 'SmartRide New Albany - Blue',
 };
 
-// Routes polled for gap detection. Curated to high-frequency routes where
-// "no bus for a long stretch" is meaningful content — low-frequency routes
-// trip the threshold during normal scheduled gaps.
-const gaps = [
-  '6',
-  '8',
-  '9',
-  'X9',
-  '20',
-  '22',
-  '26',
-  '29',
-  '36',
-  '49',
-  'X49',
-  '50',
-  '55',
-  '60',
-  '62',
-  '66',
-  '72',
-  '76',
-  '77',
-  '79',
-  '80',
-  '82',
-  '94',
-  '95',
-  '146',
-  '147',
-  '151',
-];
+// Routes polled for gap detection. Hand-curated from real-world verification
+// (transiteverywhere.com + COTA's published timetables), not purely from
+// scripts/compute-low-frequency-routes.js's computed medians, because of two
+// distinct artifacts found on COTA's network:
+//   - Paired departures (route 8: two buses ~8 min apart, then a longer gap
+//     before the next pair) used to bias the per-hour median toward the
+//     short intra-pair gap — confirmed wrong against COTA's real PDF
+//     timetable (15 min, not 8-11). FIXED at the source as of the
+//     resolveHourlyHeadway irregularity check in scripts/fetch-gtfs.js — a
+//     fresh GTFS rebuild now computes 8 correctly, so this is no longer a
+//     reason to distrust 8 specifically, but the route stays hand-listed.
+//   - Branch-splitting (CMAX, and apparently 1/2/10): two genuinely separate
+//     origin→destination patterns sharing one origin, each running ~30 min
+//     alone — the "dominant pattern wins" hoisting logic picks just one, so
+//     the computed value reads half the rider-facing frequency. This is a
+//     DIFFERENT failure mode (no single pattern's gaps are irregular, so
+//     resolveHourlyHeadway's check never fires) and remains unfixed — don't
+//     trust the computed numbers for routes that exhibit it; verify against
+//     a real source before adding/removing here.
+const gaps = ['001', '002', '006', '008', '010', '023', '034', '101'];
 
 // Routes polled for ghost-bus detection. Independent of bunching/gaps: a
 // dedicated observer cron (scripts/observeBuses.js) fetches positions for
-// these routes on a fixed cadence so the hourly rollup has consistent coverage
-// regardless of what other jobs sampled.
-const ghosts = [
-  '6',
-  '8',
-  '9',
-  'X9',
-  'J14',
-  '15',
-  '20',
-  '22',
-  '26',
-  '29',
-  '36',
-  '49',
-  'X49',
-  '50',
-  '55',
-  '60',
-  '62',
-  '66',
-  '72',
-  '76',
-  '77',
-  '79',
-  '80',
-  '82',
-  '94',
-  '95',
-  '146',
-  '147',
-  '151',
-];
+// these routes on a fixed cadence so the hourly rollup has consistent
+// coverage regardless of what other jobs sampled. Same curation as `gaps`.
+const ghosts = ['001', '002', '006', '008', '010', '023', '034', '101'];
 
-// Routes eligible for the thin-gap detector — median weekday daytime (6 AM–10
-// PM) headway > 15 min, the seam where curated `gaps`/`ghosts` coverage ends.
-// Regenerate after GTFS refresh: `node scripts/compute-low-frequency-routes.js`.
-const lowFrequency = [
-  '1', // 15.5 min
-  '7', // 15.5 min
-  '8A', // 16.5 min
-  '11', // 19.5 min
-  '18', // 18.0 min
-  '24', // 19.2 min
-  '30', // 19.0 min
-  '31', // 28.0 min
-  '35', // 16.0 min
-  '37', // 19.0 min
-  '39', // 21.8 min
-  '43', // 18.5 min
-  '44', // 16.5 min
-  '48', // 17.0 min
-  '51', // 18.5 min
-  '52A', // 17.0 min
-  '54A', // 25.5 min
-  '54B', // 20.0 min
-  '55A', // 23.0 min
-  '55N', // 23.0 min
-  '57', // 16.0 min
-  '59', // 18.0 min
-  '62H', // 27.0 min
-  '63W', // 23.5 min
-  '65', // 17.0 min
-  '68', // 21.0 min
-  '73', // 16.0 min
-  '81W', // 25.0 min
-  '85A', // 20.0 min
-  '86', // 20.0 min
-  '88', // 24.5 min
-  '90', // 18.5 min
-  '93', // 20.3 min
-  '96', // 30.0 min
-  '97', // 19.0 min
-  '100', // 20.0 min
-  '103', // 17.0 min
-  '108', // 19.5 min
-  '111A', // 20.0 min
-  '112', // 17.0 min
-  '124', // 24.0 min
-  '125', // 20.0 min
-  '126', // 15.5 min
-  '156', // 18.5 min
-  '165', // 25.0 min
-  '192', // 25.0 min
-  '201', // 25.0 min
-];
-
-// Every active CTA bus route. Used by observeBuses (the single API call site
-// for the all-routes workload), bus pulse, bunching, and speedmap — all four
-// read the same snapshot or rotate across the full list, so this list also
-// keeps pulse symmetric with bin/bus/alerts.js so a CTA alert and a pulse
-// signal can converge on the same thread.
+// Routes eligible for the thin-gap detector (bin/bus/thin-gaps.js) — outside
+// the curated `gaps`/`ghosts` core, with usable (if not fully trusted — see
+// the note above) GTFS headway data. Most computed via
+// `node scripts/fetch-gtfs.js` then `node scripts/compute-low-frequency-routes.js`
+// against the 2026-06-18 snapshot, minus the routes promoted into
+// gaps/ghosts above.
 //
-// Night Owl routes (N-prefixed) are excluded EXCEPT N5: CTA's getvehicles
-// reports overnight vehicles under the daytime route_id (e.g. a 3 AM 87-bus
-// comes back as rt: "87"), so polling for "N87" perpetually returns "no data
-// found" — only the daytime number ever has live data, even at 3 AM. N5 is
-// the lone exception because no daytime "5" route exists; CTA tracks it as
-// its own route in both getvehicles and GTFS. Names stay in `names` for
-// alert-display lookups (CTA may still issue alerts tagged with N87, etc.).
-const allRoutes = Object.keys(names).filter((r) => !/^N\d/.test(r) || r === 'N5');
+// 011/032/033 are a different case: their per-pattern headway computation
+// produces nothing at all (each alternates between two termini from the same
+// origin, same issue as CMAX — see the note above — so no single pattern
+// ever gets 2 same-hour departures), but scripts/fetch-gtfs.js's
+// computeFallbackHeadway() recovers a coarse whole-day median gap for them
+// (~30-60 min, consistent with real-world spacing) once they have ≥4
+// same-direction trips at a sane (≤120 min) spacing. This is what let route
+// 33 — riders' most common "buses never show up" complaint — get thin-gap
+// coverage at all; it had zero index entry before this fix.
+//
+// 10 routes (041-046, 061, 071, 074, 075) are AM/PM-only commuter shuttles —
+// 1-3 trips per direction, hours apart — and deliberately do NOT get a
+// fallback headway (computeFallbackHeadway's maxGapMin guard rejects them):
+// a "headway" derived from one ~10-hour gap isn't a usable "is this route
+// still running" signal. 4 more (141 Zoo, 152 AirConnect, 201/202 SmartRide)
+// have zero scheduled trips in the feed at all. All 14 stay excluded from
+// gaps/ghosts/lowFrequency — re-check after a GTFS refresh in case service
+// patterns change.
+const lowFrequency = [
+  '003', // 30.0 min
+  '004', // 30.0 min
+  '005', // 48.0 min
+  '007', // 30.0 min
+  '011', // ~60 min (fallback — branch-alternating, see note above)
+  '012', // 20.0 min
+  '021', // 59.0 min
+  '022', // 30.0 min
+  '024', // 30.0 min
+  '025', // 50.0 min
+  '031', // 30.0 min
+  '032', // ~60 min (fallback — branch-alternating, see note above)
+  '033', // ~30 min (fallback — branch-alternating, see note above)
+  '035', // 56.0 min
+  '051', // 24.0 min
+  '052', // 30.0 min
+  '072', // 25.0 min
+  '073', // 25.0 min
+  '102', // 29.0 min
+];
 
-module.exports = { names, gaps, ghosts, lowFrequency, allRoutes };
+// Every active COTA route.
+const allRoutes = Object.keys(names);
+
+// COTA's GTFS route_short_name: ordinary routes drop the route_id's
+// zero-padding ("002" -> "2"); CMAX (route_id "101") is a branded BRT line,
+// not a numbered route — its short name is "CMAX", confirmed against COTA's
+// real routes.txt (route_id 101, route_short_name "CMAX").
+const shortNames = {
+  101: 'CMAX',
+};
+
+function routeShortName(route) {
+  return shortNames[route] || String(route).replace(/^0+(?=\d)/, '');
+}
+
+// Bare display label: "Route 2" for numbered routes, or just "CMAX" for
+// branded lines whose short name already reads as a full name.
+function routeLabel(route) {
+  const short = routeShortName(route);
+  return short === names[route] ? short : `Route ${short}`;
+}
+
+// Full display title with the descriptive name: "Route 2 (E Main/N High)",
+// or just "CMAX" (skips the redundant "Route CMAX (CMAX)").
+function routeTitle(route) {
+  const name = names[route];
+  const short = routeShortName(route);
+  if (!name || short === name) return routeLabel(route);
+  return `Route ${short} (${name})`;
+}
+
+module.exports = {
+  names,
+  gaps,
+  ghosts,
+  lowFrequency,
+  allRoutes,
+  routeShortName,
+  routeLabel,
+  routeTitle,
+};

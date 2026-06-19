@@ -1,11 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {
-  bucket,
-  resolveTrainStation,
-  formatRangeLabel,
-  rangeForWindow,
-} = require('../../src/shared/recap');
+const { bucket, formatRangeLabel, rangeForWindow } = require('../../src/shared/recap');
 
 test('bucket groups events at the same coords and counts sources', () => {
   const events = [
@@ -49,18 +44,6 @@ test('bucket skips events that do not resolve to a location', () => {
   const out = bucket(events, resolve);
   assert.equal(out.length, 1);
   assert.equal(out[0].label, 'Known');
-});
-
-test('resolveTrainStation matches names across naming conventions', () => {
-  // "Halsted" on Orange should resolve to "Halsted (Orange)" in trainStations.json.
-  const loc = resolveTrainStation({ route: 'org', near_stop: 'Halsted' });
-  assert.ok(loc);
-  assert.ok(loc.name.toLowerCase().includes('halsted'));
-  assert.ok(typeof loc.lat === 'number');
-});
-
-test('resolveTrainStation returns null for unknown station', () => {
-  assert.equal(resolveTrainStation({ route: 'brn', near_stop: 'Not Real' }), null);
 });
 
 test('formatRangeLabel collapses same-month ranges', () => {

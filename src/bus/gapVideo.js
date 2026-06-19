@@ -13,9 +13,8 @@ const {
   renderBunchingFrame,
 } = require('../map');
 const { attachTrails } = require('./bunchingVideo');
-const { cumulativeDistances, haversineFt } = require('../shared/geo');
+const { cumulativeDistances, haversineFt, snapToLine, pointAlongLine } = require('../shared/geo');
 const { smoothSeries } = require('../shared/stats');
-const { snapToLine, pointAlongLine } = require('../train/speedmap');
 
 const execP = promisify(exec);
 

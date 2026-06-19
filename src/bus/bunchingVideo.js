@@ -7,7 +7,7 @@ const { promisify } = require('node:util');
 const { getVehicles } = require('./api');
 const { assignBusNumbers } = require('./bunching');
 const { computeBunchingView, fetchBunchingBaseMap, renderBunchingFrame } = require('../map');
-const { cumulativeDistances, haversineFt } = require('../shared/geo');
+const { cumulativeDistances, haversineFt, snapToLine, pointAlongLine } = require('../shared/geo');
 
 const TURNAROUND_NEAR_TERMINAL_FT = 1320; // ~0.25 mi
 // Glide a turned-around bus to the terminus over this many frames, then park
@@ -16,7 +16,6 @@ const TURNAROUND_NEAR_TERMINAL_FT = 1320; // ~0.25 mi
 // so a fixed-ms window compresses to ~1 frame at playback speed.
 const TURNAROUND_GLIDE_FRAMES = 2;
 const { smoothSeries } = require('../shared/stats');
-const { snapToLine, pointAlongLine } = require('../train/speedmap');
 const { buildVehicleSeries, vehicleStateAt } = require('../shared/videoTracks');
 
 const execP = promisify(exec);

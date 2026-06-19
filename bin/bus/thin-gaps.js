@@ -3,7 +3,12 @@ require('../../src/shared/env');
 
 const argv = require('minimist')(process.argv.slice(2));
 
-const { names: routeNames, lowFrequency } = require('../../src/bus/routes');
+const {
+  names: routeNames,
+  routeShortName,
+  routeTitle,
+  lowFrequency,
+} = require('../../src/bus/routes');
 const { detectThinGaps } = require('../../src/bus/thinGaps');
 const {
   getBusObservations,
@@ -65,8 +70,9 @@ function findUnresolvedThinGaps(now, { sinceMs = CLEAR_LOOKBACK_MS, untilMs = 0 
 }
 
 function buildClearText(route) {
+  const short = routeShortName(route);
   const name = routeNames[route];
-  const label = name ? `#${route} ${name}` : `#${route}`;
+  const label = name && name !== short ? `#${short} ${name}` : `#${short}`;
   return `🚌✅ ${label}: buses observed on the route again — earlier thin-service gap has cleared.`;
 }
 
@@ -149,8 +155,7 @@ async function handleStaleClears(now, dryRun) {
 }
 
 function formatLine(event) {
-  const name = routeNames[event.route];
-  const title = name ? `Route ${event.route} (${name})` : `Route ${event.route}`;
+  const title = routeTitle(event.route);
   const headway = Math.round(event.headwayMin);
   const windowMin = Math.round(event.windowMin);
   return `🚌 ${title} · no buses observed in past ~${windowMin} min (scheduled every ~${headway} min)`;

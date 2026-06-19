@@ -1,38 +1,42 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const Path = require('node:path');
-const Fs = require('node:fs');
 const { resolveStopOnRoute, normalizeStopName } = require('../../src/bus/patterns');
 
-// Load cached pattern fixtures directly off disk to keep tests independent of
-// loadPattern's 24h TTL — otherwise stale fixtures trigger a live API fetch
-// and the test fails with no network.
-const PATTERN_DIR = Path.join(__dirname, '..', '..', 'data', 'patterns');
-const loadPattern = async (pid) =>
-  JSON.parse(Fs.readFileSync(Path.join(PATTERN_DIR, `${pid}.json`), 'utf8'));
+const PATTERN_A = {
+  points: [
+    { type: 'W', lat: 0, lon: 0 },
+    { type: 'S', stopName: 'Archer & Nottingham', pdist: 1234 },
+    { type: 'S', stopName: 'Archer & Pulaski', pdist: 2500 },
+  ],
+};
+const PATTERN_B = {
+  points: [{ type: 'S', stopName: 'Broad & High', pdist: 500 }],
+};
+const PATTERNS = { a: PATTERN_A, b: PATTERN_B };
+const loadPattern = async (pid) => PATTERNS[pid];
 
 test('normalizeStopName lowercases + collapses whitespace', () => {
   assert.equal(normalizeStopName('Archer & Nottingham'), 'archer & nottingham');
   assert.equal(normalizeStopName('  Belmont,  Halsted  '), 'belmont halsted');
 });
 
-test('resolveStopOnRoute: exact match resolves on real cached pattern', async () => {
+test('resolveStopOnRoute: exact match resolves', async () => {
   const hit = await resolveStopOnRoute({
-    pids: ['7111'],
+    pids: ['a'],
     loadPattern,
     stopName: 'Archer & Nottingham',
   });
   assert.ok(hit, 'expected match');
-  assert.equal(hit.pid, '7111');
+  assert.equal(hit.pid, 'a');
   assert.equal(hit.stopName, 'Archer & Nottingham');
   assert.equal(typeof hit.pdist, 'number');
   assert.ok(hit.pdist > 0);
 });
 
 test('resolveStopOnRoute: junction "/" form matches "&" stop name', async () => {
-  // Headlines often write "Belmont/Halsted"; cached pattern has "& "
+  // Headlines often write "Archer/Nottingham"; pattern has "& "
   const hit = await resolveStopOnRoute({
-    pids: ['7111'],
+    pids: ['a'],
     loadPattern,
     stopName: 'Archer/Nottingham',
   });
@@ -42,7 +46,7 @@ test('resolveStopOnRoute: junction "/" form matches "&" stop name', async () => 
 
 test('resolveStopOnRoute: unknown stop returns null', async () => {
   const hit = await resolveStopOnRoute({
-    pids: ['7111'],
+    pids: ['a'],
     loadPattern,
     stopName: 'Nonexistent & Foo',
   });
@@ -51,18 +55,17 @@ test('resolveStopOnRoute: unknown stop returns null', async () => {
 
 test('resolveStopOnRoute: tries multiple pids and returns first match', async () => {
   const hit = await resolveStopOnRoute({
-    pids: ['7120', '7111'],
+    pids: ['b', 'a'],
     loadPattern,
     stopName: 'Archer & Nottingham',
   });
   assert.ok(hit);
-  // Whichever pid had the stop should be reported.
-  assert.ok(hit.pid === '7111' || hit.pid === '7120');
+  assert.equal(hit.pid, 'a');
 });
 
 test('resolveStopOnRoute: empty inputs return null', async () => {
   assert.equal(await resolveStopOnRoute({ pids: [], loadPattern, stopName: 'X' }), null);
-  assert.equal(await resolveStopOnRoute({ pids: ['7111'], loadPattern, stopName: '' }), null);
+  assert.equal(await resolveStopOnRoute({ pids: ['a'], loadPattern, stopName: '' }), null);
 });
 
 test('resolveStopOnRoute: works with mock loadPattern (no fs)', async () => {

@@ -5,14 +5,20 @@ const argv = require('minimist')(process.argv.slice(2));
 
 const { getVehiclesCachedOrFresh, getPredictions } = require('../../src/bus/api');
 const { gaps: gapRoutes } = require('../../src/bus/routes');
-const { detectAllGaps } = require('../../src/bus/gaps');
+const { detectAllGaps, isGapFilledBySibling } = require('../../src/bus/gaps');
 const { loadPattern, findNearestStop } = require('../../src/bus/patterns');
 const { renderGapMap } = require('../../src/map');
 const { captureBusGapVideo } = require('../../src/bus/gapVideo');
 const { loginBus, postWithImage, postText, postWithVideo } = require('../../src/bus/bluesky');
 const { isOnCooldown } = require('../../src/shared/state');
 const { commitAndPost } = require('../../src/shared/postDetection');
-const { expectedHeadwayMin, loadIndex, scheduleDeviationMin } = require('../../src/shared/gtfs');
+const { routeLabel } = require('../../src/bus/routes');
+const {
+  expectedHeadwayMin,
+  resolveDirection,
+  loadIndex,
+  scheduleDeviationMin,
+} = require('../../src/shared/gtfs');
 const history = require('../../src/shared/history');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
 const {
@@ -105,6 +111,51 @@ async function main() {
     const stops = candidatePattern.points.filter((p) => p.type === 'S' && p.stopName);
     if (stop === stops[0] || stop === stops[stops.length - 1]) {
       console.log(`  skip pid ${candidate.pid}: nearest stop "${stop.stopName}" is a terminal`);
+      continue;
+    }
+
+    // A route that splits into two termini from one origin (e.g. Route 2's
+    // "TO REYNOLDSBURG" / "TO HAMILTON ROAD") is tracked as two separate
+    // streams above — a bus on the sibling pattern doesn't show up in this
+    // candidate's own pdist gap. Check whether one's actually sitting in the
+    // empty stretch right now before trusting the gap as real.
+    if (
+      isGapFilledBySibling({
+        gap: candidate,
+        pattern: candidatePattern,
+        vehicles,
+        resolveGroupDir: (route, pattern) => resolveDirection({ ...pattern, route }),
+        getPattern: (pid) => patternCache.get(pid) || null,
+        now,
+      })
+    ) {
+      console.log(
+        `  skip pid ${candidate.pid}: a sibling-pattern bus is already covering this gap`,
+      );
+      history.recordGap({
+        kind: 'bus',
+        route: candidate.route,
+        direction: candidate.pid,
+        gapFt: candidate.gapFt,
+        gapMin: candidate.gapMin,
+        expectedMin: candidate.expectedMin,
+        ratio: candidate.ratio,
+        nearStop: stop.stopName,
+        posted: false,
+      });
+      history.recordMetaSignal({
+        kind: 'bus',
+        line: candidate.route,
+        direction: candidate.pid,
+        source: 'gap',
+        severity: Math.min(1, candidate.ratio / 4),
+        detail: {
+          ratio: candidate.ratio,
+          suppressed: 'sibling_covered',
+          ...gapSegmentDetail(candidate),
+        },
+        posted: false,
+      });
       continue;
     }
 
@@ -264,7 +315,7 @@ async function main() {
   const callouts = history.gapCallouts({
     kind: 'bus',
     route: gap.route,
-    routeLabel: `Route ${gap.route}`,
+    routeLabel: routeLabel(gap.route),
     ratio: gap.ratio,
   });
   if (callouts.length > 0) console.log(`Callouts: ${callouts.join(' · ')}`);

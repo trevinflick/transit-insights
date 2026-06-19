@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install/update the cta-insights logrotate config under /etc/logrotate.d/.
+# Install/update the cota-insights logrotate config under /etc/logrotate.d/.
 # Detects the owner of the local cron/ directory and substitutes it into
 # the template so the repo file stays user-agnostic.
 #
@@ -9,14 +9,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$REPO_DIR/cron/logrotate.conf"
 CRON_LOG_DIR="$REPO_DIR/cron"
-DEST="/etc/logrotate.d/cta-insights"
-
-# Clean up the legacy cta-bot config if present so we don't end up with two
-# logrotate entries managing the same directory.
-if [ -f "/etc/logrotate.d/cta-bot" ] && [ "$DEST" != "/etc/logrotate.d/cta-bot" ]; then
-  rm -f /etc/logrotate.d/cta-bot
-  echo "Removed legacy /etc/logrotate.d/cta-bot"
-fi
+DEST="/etc/logrotate.d/cota-insights"
 
 if [ ! -f "$SRC" ]; then
   echo "Source template missing: $SRC" >&2

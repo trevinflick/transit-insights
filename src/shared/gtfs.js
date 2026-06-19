@@ -37,7 +37,7 @@ function loadIndex() {
 // produced by fetch-gtfs.js (weekday/saturday/sunday/weekend).
 function dayTypeFor(now = new Date()) {
   const weekday = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
+    timeZone: 'America/New_York',
     weekday: 'short',
   }).format(now);
   if (weekday === 'Sat') return 'saturday';
@@ -47,7 +47,7 @@ function dayTypeFor(now = new Date()) {
 
 function chicagoHour(now = new Date()) {
   const h = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
+    timeZone: 'America/New_York',
     hour: '2-digit',
     hour12: false,
   }).format(now);
@@ -56,7 +56,7 @@ function chicagoHour(now = new Date()) {
 
 function chicagoMinuteOfHour(now = new Date()) {
   const m = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
+    timeZone: 'America/New_York',
     minute: '2-digit',
   }).format(now);
   return parseInt(m, 10);
@@ -281,242 +281,27 @@ function expectedBusRouteHeadwayMin(route, now = new Date()) {
   return max;
 }
 
-// Train Tracker line codes (lowercase) → GTFS route_id in the index. These
-// are the only eight rail "routes" CTA publishes and the mapping is static.
-const TRAIN_LINE_TO_GTFS = {
-  red: 'Red',
-  blue: 'Blue',
-  brn: 'Brn',
-  g: 'G',
-  org: 'Org',
-  p: 'P',
-  pink: 'Pink',
-  y: 'Y',
-};
-
-// Pick the GTFS direction whose terminal is closest to `destination` ({lat,
-// lon}). Loop lines (Brown/Orange/Purple/Pink/Yellow) ship one direction so
-// the match is trivial.
-function pickTrainDirInfo(line, destination) {
+// Resolve a trip_id straight off the static index — built by
+// scripts/fetch-gtfs.js from trips.txt, keyed exactly as COTA's
+// GTFS-realtime feed tags it (no suffix mismatch to normalize, unlike
+// Metra). Used by src/bus/api.js to recover a vehicle's true direction_id
+// and shape_id: COTA's realtime VehiclePositions reports a direction_id that
+// does NOT reliably match the static schedule's for the same trip — confirmed
+// against a live sample (realtime said 7, static said 1) — so direction must
+// always be resolved this way, never trusted off the live feed.
+function getTripMeta(tripId) {
   const index = loadIndex();
-  const gtfsId = TRAIN_LINE_TO_GTFS[line];
-  if (!gtfsId) return null;
-  const byDir = index.lines?.[gtfsId];
-  if (!byDir) return null;
-  const dirs = Object.values(byDir);
-  if (dirs.length === 1) return dirs[0];
-  if (!destination || destination.lat == null) return null;
-  let best = null;
-  let bestDist = Infinity;
-  for (const info of dirs) {
-    if (info.terminalLat == null) continue;
-    const d = haversineFt({ lat: info.terminalLat, lon: info.terminalLon }, destination);
-    if (d < bestDist) {
-      bestDist = d;
-      best = info;
-    }
-  }
-  return best;
+  return index.trips?.[tripId] || null;
 }
 
-function trainLookup(line, destination, field, now) {
-  const dirInfo = pickTrainDirInfo(line, destination);
-  if (!dirInfo?.[field]) return null;
-  return hourlyLookup(dirInfo[field], now);
-}
-
-// Refine pickTrainDirInfo to the indexed pattern group whose terminal is
-// closest to `destination` — short-turns (e.g. Howard→Roosevelt) carry their
-// own headway, distinct from the through run. Falls back to the direction-level
-// dominant pattern when there's no destination or no pattern list.
-function pickTrainPattern(line, destination) {
-  const dirInfo = pickTrainDirInfo(line, destination);
-  if (!dirInfo) return null;
-  if (!dirInfo.patterns?.length || !destination || destination.lat == null) return dirInfo;
-  let best = null;
-  let bestDist = Infinity;
-  for (const p of dirInfo.patterns) {
-    if (p.terminalLat == null) continue;
-    const d = haversineFt({ lat: p.terminalLat, lon: p.terminalLon }, destination);
-    if (d < bestDist) {
-      bestDist = d;
-      best = p;
-    }
-  }
-  return best && bestDist <= PATTERN_MATCH_TOLERANCE_FT ? best : dirInfo;
-}
-
-function expectedTrainHeadwayMin(line, destination, now = new Date()) {
-  const grp = pickTrainPattern(line, destination);
-  if (!grp?.headways) return null;
-  return interpolatedHourlyLookup(grp.headways, now);
-}
-
-// Line-wide headway when no destination is available — used by the pulse
-// detector on bi-directional lines (Red/Blue/Green) where pickTrainDirInfo
-// can't pick a side. Returns the slower of the two GTFS directions so the
-// resulting cold threshold doesn't undershoot during off-peak hours.
-function expectedTrainHeadwayMinAnyDir(line, now = new Date()) {
+// Ordered [{ lat, lon, distFt }] for a shape_id, built by fetch-gtfs.js from
+// shapes.txt with haversine-measured cumulative distance (not GTFS's own
+// shape_dist_traveled, which isn't trustworthy-by-default across feeds). Used
+// by shapeProjection.js to recover the pdist-equivalent CTA's BusTime API
+// gives for free but COTA's GTFS-realtime doesn't.
+function getShapePoints(shapeId) {
   const index = loadIndex();
-  const gtfsId = TRAIN_LINE_TO_GTFS[line];
-  if (!gtfsId) return null;
-  const byDir = index.lines?.[gtfsId];
-  if (!byDir) return null;
-  let max = null;
-  for (const info of Object.values(byDir)) {
-    if (!info?.headways) continue;
-    const v = interpolatedHourlyLookup(info.headways, now);
-    if (!Number.isFinite(v)) continue;
-    if (max == null || v > max) max = v;
-  }
-  return max;
-}
-
-function expectedTrainTripMinutes(line, destination, now = new Date()) {
-  const grp = pickTrainPattern(line, destination);
-  if (!grp?.durations) return null;
-  return interpolatedHourlyLookup(grp.durations, now);
-}
-
-function expectedTrainActiveTrips(line, destination, now = new Date()) {
-  return trainLookup(line, destination, 'activeByHour', now);
-}
-
-// Sum activeByHour across every GTFS direction of a line for the current
-// hour. Returns 0 when the line is between service hours (Brown/Pink/Yellow/
-// Purple Express drop to 0 outside their schedule). Used by train pulse to
-// avoid false-flagging end-of-service cold stretches as outages.
-function expectedTrainActiveTripsAnyDir(line, now = new Date()) {
-  const index = loadIndex();
-  const gtfsId = TRAIN_LINE_TO_GTFS[line];
-  if (!gtfsId) return 0;
-  const byDir = index.lines?.[gtfsId];
-  if (!byDir) return 0;
-  let total = 0;
-  for (const info of Object.values(byDir)) {
-    if (!info?.activeByHour) continue;
-    const v = hourlyLookup(info.activeByHour, now);
-    if (Number.isFinite(v)) total += v;
-  }
-  return total;
-}
-
-// Approximate scheduled trip starts toward `destinationDir` between `sinceTs`
-// and `untilTs`. Uses activeByHour (count of trips active at minute=30 of each
-// hour) as a proxy for "how many distinct trips this hour" — divides by 1 when
-// active count >=1 to model that the hour saw at least one trip start. For the
-// pulse dispatch-continuity check this is conservative: if GTFS says service
-// is running at all in the window, we assume at least one dispatch.
-function expectedTrainDispatchesInWindow(line, _trDr, sinceTs, untilTs) {
-  const index = loadIndex();
-  const gtfsId = TRAIN_LINE_TO_GTFS[line];
-  if (!gtfsId) return null;
-  const byDir = index.lines?.[gtfsId];
-  if (!byDir) return null;
-  const start = sinceTs;
-  const end = untilTs;
-  if (!(end > start)) return 0;
-  let total = 0;
-  for (let t = start; t < end; t += 60 * 60 * 1000) {
-    let hourActive = 0;
-    for (const info of Object.values(byDir)) {
-      if (!info?.activeByHour) continue;
-      const v = hourlyLookup(info.activeByHour, new Date(t));
-      if (Number.isFinite(v)) hourActive += v;
-    }
-    const fraction = Math.min(1, (Math.min(end, t + 60 * 60 * 1000) - t) / (60 * 60 * 1000));
-    if (hourActive >= 1) total += fraction;
-  }
-  return total;
-}
-
-// Peak-only express-overlay model for a line that runs a base shuttle all day
-// plus a rush-hour express continuation. Currently this is *only* Purple:
-// the Linden↔Howard shuttle runs all day, and a weekday-rush Express round
-// trip (Linden→Loop→Linden) overlays on top, serving Howard→Loop only at peak.
-//
-// The cold detector treats the whole Linden→Loop polyline as one corridor
-// gated by *observed* trains, which leaks "cold segment" false positives south
-// of Howard whenever the Express overlay isn't actually serving that stretch
-// in that direction (evenings, midday, off-peak direction on a shoulder hour) —
-// a lone deadhead/return-leg train keeps the observed corridor open. This
-// returns the schedule truth the detector needs to clip / raise-threshold the
-// stretch beyond the base terminal. Returns null for any line without such an
-// overlay (i.e. every line except Purple).
-//
-//   baseLat/baseLon    — base-shuttle terminal (Howard). South of it (toward
-//                        the Loop) is Express-only territory.
-//   expressHeadwayMin  — Express round-trip headway at `now` (null off-peak).
-//   southLiveInbound   — is south-of-base service live NOW for inbound trains
-//                        (toward the Loop)? Express is inbound-dominant AM.
-//   southLiveOutbound  — same for outbound trains (toward the outer terminal);
-//                        Express is outbound-dominant PM.
-// Lines with a base-shuttle + rush-express-overlay structure. Purple is the
-// only one (Evanston Linden↔Howard shuttle + Howard→Loop Express). Loop lines
-// like Brown/Orange encode their main service as a round-trip pattern too, so
-// the structural detection below would otherwise false-match them — the
-// allowlist keeps this scoped to the line the model actually describes.
-const OVERLAY_LINES = new Set(['p']);
-
-function trainOverlayInfo(line, now = new Date()) {
-  if (!OVERLAY_LINES.has(line)) return null;
-  const dir = pickTrainDirInfo(line, null);
-  const patterns = dir?.patterns;
-  if (!Array.isArray(patterns) || patterns.length < 2) return null;
-  const near = (aLat, aLon, bLat, bLon) =>
-    aLat != null &&
-    bLat != null &&
-    haversineFt({ lat: aLat, lon: aLon }, { lat: bLat, lon: bLon }) < 1500;
-  // Overlay = the round-trip pattern (origin ≈ terminal). Shuttles are one-way
-  // (origin ≠ terminal); only Purple's Express starts and ends at the same
-  // outer terminal with the Loop as a mid-trip turn.
-  const overlay = patterns.find((p) =>
-    near(p.originLat, p.originLon, p.terminalLat, p.terminalLon),
-  );
-  if (!overlay) return null;
-  const outerLat = overlay.originLat;
-  const outerLon = overlay.originLon;
-  // Base terminal = the shuttle endpoint that ISN'T the outer terminal (Howard
-  // for Purple — the shuttles run Howard↔Linden).
-  let baseLat = null;
-  let baseLon = null;
-  for (const p of patterns) {
-    if (p === overlay) continue;
-    for (const [la, lo] of [
-      [p.originLat, p.originLon],
-      [p.terminalLat, p.terminalLon],
-    ]) {
-      if (la != null && !near(la, lo, outerLat, outerLon)) {
-        baseLat = la;
-        baseLon = lo;
-      }
-    }
-  }
-  if (baseLat == null) return null;
-  const daytype = dayTypeFor(now);
-  const hour = chicagoHour(now);
-  const serviceHours = Object.keys(overlay.headways?.[daytype] || {}).map(Number);
-  if (serviceHours.length === 0) return null;
-  return {
-    baseLat,
-    baseLon,
-    expressHeadwayMin: interpolatedHourlyLookup(overlay.headways, now),
-    southLiveInbound: hour < 12 && serviceHours.includes(hour),
-    southLiveOutbound: hour >= 12 && serviceHours.includes(hour),
-  };
-}
-
-// Loop lines (Brown/Orange/Pink/Purple/Yellow) ship a single GTFS direction_id
-// covering the full Midway→Loop→Midway round trip. Bi-directional lines
-// (Red/Blue/Green) have two. Ghost detection uses this to decide whether to
-// split observations by Train Tracker direction or aggregate line-wide.
-function isTrainLoopLine(line) {
-  const index = loadIndex();
-  const gtfsId = TRAIN_LINE_TO_GTFS[line];
-  if (!gtfsId) return false;
-  const byDir = index.lines?.[gtfsId];
-  if (!byDir) return false;
-  return Object.keys(byDir).length === 1;
+  return index.shapes?.[shapeId] || null;
 }
 
 // --- Bus schedule adherence (how late/early a specific bus is) ---
@@ -559,7 +344,7 @@ function schedDb() {
 // absorbs the after-midnight service-day wrap that this doesn't model.
 function chicagoSecondsOfDay(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
+    timeZone: 'America/New_York',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -644,22 +429,16 @@ module.exports = {
   deviationFromStops,
   chicagoSecondsOfDay,
   expectedHeadwayMin,
-  expectedTrainHeadwayMin,
-  expectedTrainHeadwayMinAnyDir,
   expectedTripMinutes,
-  expectedTrainTripMinutes,
   expectedActiveTrips,
   expectedBusRouteActiveTrips,
   expectedBusRouteHeadwayMin,
-  expectedTrainActiveTrips,
-  expectedTrainActiveTripsAnyDir,
-  expectedTrainDispatchesInWindow,
-  trainOverlayInfo,
-  isTrainLoopLine,
   resolveDirection,
   matchPattern,
   dayTypeFor,
   chicagoHour,
   chicagoMinuteOfHour,
   hourlyLookup,
+  getTripMeta,
+  getShapePoints,
 };

@@ -1,45 +1,23 @@
 # ============================================================================
-# CTA-INSIGHTS cron block — source of truth for the live crontab.
+# COTA-INSIGHTS cron block — source of truth for the live crontab.
 # ============================================================================
 #
 # Install with:   scripts/install-crontab.sh
 # (safe marker-merge — replaces only this block, never your other cron jobs.)
 #
-# Trains, buses, Metra, recaps, health audits, reference-data refresh, web-data
-# publish, and backups all run here.
-# The /path/to/cta-insights placeholder is filled in with the repo checkout at
+# Bus detection, recaps, health audits, reference-data refresh, and backups
+# all run here. Single agency (COTA, bus-only) — no multi-mode staggering is
+# needed; offsets below only avoid jobs colliding with each other.
+# The /path/to/cota-insights placeholder is filled in with the repo checkout at
 # install (cron does NOT expand variables in R= assignment lines, so the path
 # must be inlined — the install script does the substitution).
 # Logs go to cron/<name>-cron.log (gitignored).
 
-# CTA-INSIGHTS-START
+# COTA-INSIGHTS-START
 
 # All jobs run via bin/cron-run.sh <log-name> <script> [args...] which handles
 # cd, timestamping, and log redirection.
-R=/path/to/cta-insights/bin/cron-run.sh
-
-# --- Trains ---
-# train-pulse on even minutes (0,2,4,...) and train-alerts on odd minutes
-# (1,3,5,...) so they never share a wall minute. Threading invariant: when
-# both run on the same minute they each see "no thread parent yet" and post
-# separate top-level posts instead of replying to one another.
-0-58/2  *  *  *  *   $R train-pulse      bin/train/pulse.js
-4-59/15 *  *  *  *   $R train-bunching   bin/train/bunching.js
-# cross-line pileup (2+ lines, e.g. the shared Loop). Runs 1 min BEFORE
-# train-bunching so a posted multi-line pileup suppresses the per-line post for
-# the same trains (recentCrossBunchMemberIds, 10-min window).
-3-59/15 *  *  *  *   $R train-cross-bunching bin/train/cross-bunching.js
-1-59/2  *  *  *  *   $R train-alerts     bin/train/alerts.js
-7-59/15 *  *  *  *   $R train-gaps       bin/train/gaps.js
-0       */2 *  *  *  $R train-speedmap   bin/train/speedmap.js
-0       */3 *  *  *  $R train-snapshot   bin/train/snapshot.js
-8       *  *  *  *   $R train-ghosts     bin/train/ghosts.js
-# incident-roundup runs every 5 min on :04 offset, separate from pulse :02 /
-# alerts :02 / gaps :07 so its detector-correlation read isn't racing the
-# writers. Reads meta_signals for both train and bus near-misses and posts a
-# single rollup when distinct-source signals on the same line/route within
-# 30 min sum past the threshold.
-4-59/5  *  *  *  *   $R incident-roundup bin/incident-roundup.js
+R=/path/to/cota-insights/bin/cron-run.sh
 
 # --- Buses ---
 # cross-route pileup (2+ routes at one corner). Runs 1 min BEFORE bus-bunching
@@ -47,105 +25,34 @@ R=/path/to/cta-insights/bin/cron-run.sh
 # buses (recentCrossBunchMemberIds, 10-min window).
 0-59/20 *  *  *  *   $R bus-cross-bunching bin/bus/cross-bunching.js
 1-59/20 *  *  *  *   $R bus-bunching     bin/bus/bunching.js
-# bus-alerts on even minutes, bus-pulse on odd minutes — same threading-
-# safety reasoning as train-alerts vs train-pulse. Bot accounts differ from
-# the train side, so cross-bot collisions (e.g. bus-pulse + train-alerts both
-# on odd) are fine; the rule is only within a single bot's thread.
-0-58/2  *  *  *  *   $R bus-alerts       bin/bus/alerts.js
-1-59/2  *  *  *  *   $R bus-pulse        bin/bus/pulse.js
 6-59/20 *  *  *  *   $R bus-gaps         bin/bus/gaps.js
 # bus-thin-gaps: gap detection for low-frequency routes, every 15 min on a :13
-# offset so it doesn't share a wall minute with bus-gaps (:06/26/46) or the
-# pulse/alerts cadence.
+# offset so it doesn't share a wall minute with bus-gaps (:06/26/46).
 13-58/15 *  *  *  *  $R bus-thin-gaps    bin/bus/thin-gaps.js
 0       */2 *  *  *  $R bus-speedmap     bin/bus/speedmap.js
 7       *  *  *  *   $R bus-ghosts       bin/bus/ghosts.js
-# observe-buses runs every minute. CTA refreshes every 30s, so 60s misses at
-# most one refresh cycle. 124 routes × 13 chunks × 1440 ticks/day ≈ 18.7k/day,
-# well under the 100k/day cap. bunching/gaps/pulse all read the cache
-# (maxStaleMs=90s) so observe-buses is the only API call site for the
-# all-routes workload.
+# observe-buses runs every minute. COTA's GTFS-realtime feeds are unauthenticated
+# polled protobuf endpoints (no daily-request cap like CTA's BusTime), so cadence
+# here is about freshness, not quota. bunching/gaps/pulse all read the cache
+# (maxStaleMs=90s) so observe-buses is the only poll site for the all-routes
+# workload.
 *       *  *  *  *   $R observe-buses    scripts/observeBuses.js
-# observe-trains polls Train Tracker every 30s. Cron's minimum granularity is
-# 1 min, so the script itself runs two ticks 30s apart per firing. One batched
-# call returns all 8 lines, so 2880 calls/day — well under the 100k/day cap.
-# At 30s cadence the snapshot timelapse gets ~30 frames per train per 15-min
-# window, vs ~7-8 at the prior 2-min cadence — visibly continuous motion.
-*       *  *  *  *   $R observe-trains   scripts/observeTrains.js
-
-# --- Metra ---
-# observe-metra polls the Metra GTFS-realtime positions + tripUpdates feeds every
-# 30s (two ticks 30s apart per firing, like observe-trains). Metra uses a separate
-# API token (METRA_API_KEY), so this is NOT on the CTA 100k/day budget: ~4 calls/min
-# = ~5.8k/day. Writes positions to observations(kind='metra') + per-stop predictions
-# to metra_trip_updates — the substrate for the (forthcoming) delay/cancellation
-# detectors. Detection + posting jobs land phase by phase — see plan-6-9-26.md.
-*       *  *  *  *   $R observe-metra    scripts/observeMetra.js
-# metra-alerts republishes Metra's GTFS-rt service alerts to @metraalertinsights and
-# posts a threaded resolved reply when one drops out of the feed. Odd minutes; the
-# account is Metra-only so it can't collide with the CTA alerts threading.
-1-59/2  *  *  *  *   $R metra-alerts     bin/metra/alerts.js
-# metra-speedmap posts a per-line corridor speedmap to @metrainsights every 2 hours,
-# round-robin across the 11 lines. Offset to :30 so it doesn't share a wall minute
-# with bus-/train-speedmap (:00). Reads recorded observations (no live poll).
-30      */2 *  *  *  $R metra-speedmap   bin/metra/speedmap.js
-# metra-cancellations: hourly rollup of confirmed + inferred cancellations + 15+ min
-# delays per line to @metrainsights (the analytics/insights account — cancellation is
-# the CTA-ghost analog and delay the gap analog, both of which post to the insights
-# account on the CTA side; ghost cadence; silent when none). Records every event to
-# disruption_events (website-data-first) regardless. Runs at :14, distinct from
-# metra-speedmap (:30) and metra-recap (:40/:50) on the same account; all three post
-# top-level (no threading) so a shared minute would be harmless anyway.
-14      *  *  *  *   $R metra-cancellations bin/metra/cancellations.js
 
 # --- Recaps ---
 20      10 *  *  0   $R bus-recap        bin/bus/recap.js   --window=week
-25      10 *  *  0   $R train-recap      bin/train/recap.js --window=week
 30      10 1  *  *   $R bus-recap        bin/bus/recap.js   --window=month
-35      10 1  *  *   $R train-recap      bin/train/recap.js --window=month
-# metra-recap posts a per-line on-time reliability chart to @metrainsights
-# (loginMetra). On its own minutes (:40 weekly, :50 monthly) so it never shares a
-# wall minute with bus-/train-recap; the account is Metra-only regardless.
-40      10 *  *  0   $R metra-recap      bin/metra/recap.js --window=week
-50      10 1  *  *   $R metra-recap      bin/metra/recap.js --window=month
 
 # --- Health audits ---
 */30    *  *  *  *   $R audit-alerts     bin/audit-alerts.js
 
 # --- Reference data refresh ---
 15      3  *  *  *   $R fetch-gtfs       scripts/fetch-gtfs.js
-# fetch-metra-gtfs rebuilds the Metra schedule index + line/station geometry. Offset
-# to :45 so it doesn't share a wall minute with fetch-gtfs (:15). No-ops when Metra's
-# published.txt marker is unchanged, so most nights it's a cheap HEAD-and-skip.
-45      3  *  *  *   $R fetch-metra-gtfs scripts/fetch-metra-gtfs.js
-0       4  1  *  *   $R fetch-signals    scripts/fetch-signals.js
-
-# --- Web data publish ---
-# Publishes alerts.json + daily-counts.json + alerts.csv to the R2 data origin
-# (data.chicagotransitalerts.app) and fires a GitHub repository_dispatch rebuild
-# when the data changed. Standalone /bin/sh script (not via cron-run.sh, which is
-# node-only); also invoked event-driven by src/shared/webPushTrigger.js ~30s
-# after a new post. No-ops on byte-identical data. Pings healthchecks.io via its
-# own EXIT trap (covers the no-op exit too). Logs into the
-# cta-alert-history checkout. NOTE: the live crontab also sets a vestigial
-# PAGES_REPO= — unused since the R2 migration replaced the git-commit-to-Pages
-# flow; omitted here.
-*/15    *  *  *  *   CTA_INSIGHTS=/path/to/cta-insights /bin/sh /path/to/cta-insights/bin/push-web-data.sh >> $HOME/Development/cta-alert-history/cron/push-web-data-cron.log 2>&1
-# export-event-tracks: archive per-incident vehicle-position "tracks" to R2 for
-# the event-page replay (EventReplay). Reads the alerts.json push-web-data.sh
-# just wrote to tmp/web-data (falls back to the live origin) + the observations
-# table, and rclones gzipped tracks to the same bucket under tracks/. Manifest-
-# skips incidents already archived after they resolved; active ones re-upload
-# until they do. Offset to :09 so it runs after the :00/:15 push refreshes
-# alerts.json, and stays well inside the 7-day observation rolloff. Uses the
-# same r2web remote as the backups/data push — no new creds. See docs/REPLAY.md.
-9-59/15 *  *  *  *   $R export-event-tracks bin/export-event-tracks.js
 
 # --- Backups ---
 # Off-box backup of state/history.sqlite to Cloudflare R2. Standalone shell
 # script (not via cron-run.sh, which is node-only); see docs/BACKUPS.md. The
-# /path/to/cta-insights placeholders are substituted by the install procedure
+# /path/to/cota-insights placeholders are substituted by the install procedure
 # above alongside the R= line.
-17      4  *  *  *   /path/to/cta-insights/scripts/backup-db.sh >> /path/to/cta-insights/cron/backup-db-cron.log 2>&1
+17      4  *  *  *   /path/to/cota-insights/scripts/backup-db.sh >> /path/to/cota-insights/cron/backup-db-cron.log 2>&1
 
-# CTA-INSIGHTS-END
+# COTA-INSIGHTS-END

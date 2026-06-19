@@ -1,14 +1,15 @@
 // Post text for a cross-route bus pileup (2+ routes stacked at one spot).
 // Unlike the per-route bunching post, the headline is a PLACE, and buses are
 // grouped by route with the disc number each carries on the map.
-const { names: routeNames } = require('./routes');
+const { routeTitle, routeLabel: routeShortLabel } = require('./routes');
 const { groupByRoute } = require('./crossBunching');
 const { formatCallouts } = require('../shared/history');
 const { formatDistance, keycapNumber } = require('../shared/format');
 
+// Kept as `routeLabel` for external callers (bin/bus/cross-bunching.js's map
+// legend) — delegates to the shared full-title formatter.
 function routeLabel(route) {
-  const name = routeNames[route];
-  return name ? `Route ${route} (${name})` : `Route ${route}`;
+  return routeTitle(route);
 }
 
 // `ctx` = { placeName }. Returns the primary post text.
@@ -32,7 +33,7 @@ function buildPostText(cluster, ctx, callouts = []) {
 function buildAltText(cluster, ctx) {
   const { placeName } = ctx;
   const where = placeName ? ` near ${placeName}` : '';
-  const routes = cluster.routes.map((r) => `Route ${r}`).join(', ');
+  const routes = cluster.routes.map((r) => routeShortLabel(r)).join(', ');
   return `Map${where} showing ${cluster.vehicles.length} buses from ${cluster.routeCount} routes (${routes}) bunched within ${formatDistance(cluster.spanFt)} of each other.`;
 }
 

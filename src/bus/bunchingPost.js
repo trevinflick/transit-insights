@@ -1,4 +1,4 @@
-const { names: routeNames } = require('./routes');
+const { routeTitle } = require('./routes');
 const { assignBusNumbers } = require('./bunching');
 const { formatCallouts } = require('../shared/history');
 const {
@@ -8,11 +8,6 @@ const {
   formatDeviation,
   keycapNumber,
 } = require('../shared/format');
-
-function routeTitle(route) {
-  const name = routeNames[route];
-  return name ? `Route ${route} (${name})` : `Route ${route}`;
-}
 
 function buildPostText(bunch, pattern, stop, callouts = [], opts = {}) {
   const title = routeTitle(bunch.route);

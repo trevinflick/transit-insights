@@ -16,17 +16,6 @@ function colorForBusSpeed(mph) {
   return '2ad17f'; // green
 }
 
-// Buckets align with CTA's slow-zone categories (15/25/35 mph). Extra purple
-// band sits above slow zones but below line speed; green is full-speed (~45+).
-function colorForTrainSpeed(mph) {
-  if (mph == null) return '444'; // no data — dim gray
-  if (mph < 15) return 'ff2a2a'; // red
-  if (mph < 25) return 'ff8c1a'; // orange
-  if (mph < 35) return 'ffd21a'; // yellow
-  if (mph < 45) return 'a855f7'; // purple
-  return '2ad17f'; // green
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -166,7 +155,6 @@ function summarize(speeds, thresholds = { orange: 5, yellow: 10, green: 15 }) {
 }
 
 const BUS_THRESHOLDS = { orange: 5, yellow: 10, green: 15 };
-const TRAIN_THRESHOLDS = { orange: 15, yellow: 25, purple: 35, green: 45 };
 
 module.exports = {
   collect,
@@ -176,7 +164,5 @@ module.exports = {
   binSegments,
   summarize,
   colorForBusSpeed,
-  colorForTrainSpeed,
   BUS_THRESHOLDS,
-  TRAIN_THRESHOLDS,
 };

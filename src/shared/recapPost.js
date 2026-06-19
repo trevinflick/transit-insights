@@ -42,13 +42,13 @@ function buildAltText({ mode, window, windowLabel, points, totalIncidents }) {
   const label = windowLabel || WINDOW_LABELS[window] || window;
   const inPhrase = windowLabel ? `from ${label}` : label;
   if (totalIncidents === 0) {
-    return `Map of Chicago with no points plotted — no chronic ${subject} bunching was recorded ${inPhrase}.`;
+    return `Map of Columbus with no points plotted — no chronic ${subject} bunching was recorded ${inPhrase}.`;
   }
   const [locSing, locPlur] = locNouns(mode);
   const bunches = pluralize(totalIncidents, 'bunch', 'bunches');
   const locs = pluralize(points.length, locSing, locPlur);
   const top = points.slice(0, 3).map(formatBullet).join(', ');
-  return `Heatmap of Chicago showing where ${subject} bunched ${inPhrase}: ${bunches} near ${locs}, with red circles sized by frequency. Top spots: ${top}.`;
+  return `Heatmap of Columbus showing where ${subject} bunched ${inPhrase}: ${bunches} near ${locs}, with red circles sized by frequency. Top spots: ${top}.`;
 }
 
 function buildGapReplyText({

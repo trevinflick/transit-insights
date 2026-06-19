@@ -93,13 +93,13 @@ test('recentDetectorActivity bundles gaps/pulses/alerts', () => {
 });
 
 test('chicagoStartOfRushPeriod buckets by AM/midday/PM/evening', () => {
-  // 09:00 CDT (14:00 UTC) on May 3, 2026 → AM rush period (>=5, <10) → anchor 05:00 CT
-  const morning = Date.UTC(2026, 4, 3, 14, 0);
+  // 09:00 EDT (13:00 UTC) on May 3, 2026 → AM rush period (>=5, <10) → anchor 05:00 ET
+  const morning = Date.UTC(2026, 4, 3, 13, 0);
   const r1 = chicagoStartOfRushPeriod(morning);
   // r1 should be earlier than `morning`
   assert.ok(r1 < morning);
-  // 16:00 CDT (21:00 UTC) → PM (>=15, <20) → anchor 15:00
-  const pm = Date.UTC(2026, 4, 3, 21, 0);
+  // 16:00 EDT (20:00 UTC) → PM (>=15, <20) → anchor 15:00
+  const pm = Date.UTC(2026, 4, 3, 20, 0);
   const r2 = chicagoStartOfRushPeriod(pm);
   assert.ok(r2 < pm);
   assert.ok(r2 > r1);

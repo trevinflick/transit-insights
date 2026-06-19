@@ -3,10 +3,16 @@ const STALE_MS = 3 * 60 * 1000;
 // used as a ratio against GTFS-scheduled headway — not an absolute ETA.
 const TYPICAL_SPEED_FT_PER_MIN = 880;
 const { terminalZoneFt } = require('../shared/geo');
+const { projectOntoShape } = require('./shapeProjection');
 // Absolute floor protects low-frequency routes (30-min schedule) from
 // spamming on every 31-min drift.
 const RATIO_THRESHOLD = 2.5;
 const ABSOLUTE_MIN_MIN = 15;
+// "Is this sibling vehicle still on the shared trunk" gate for
+// isGapFilledBySibling — same order of magnitude as this codebase's other
+// "meaningfully on this route" thresholds (scheduleDeviationMin's
+// MAX_OFFROUTE_FT=600, bunching's 800 ft cluster threshold).
+const SIBLING_MAX_PERP_FT = 1200;
 
 function detectAllGaps(vehicles, expectedHeadwayForPid, patternForPid, now = new Date()) {
   const fresh = vehicles.filter((v) => now - v.tmstmp < STALE_MS);
@@ -98,4 +104,60 @@ function detectAllGaps(vehicles, expectedHeadwayForPid, patternForPid, now = new
   return gaps;
 }
 
-module.exports = { detectAllGaps, RATIO_THRESHOLD, ABSOLUTE_MIN_MIN, TYPICAL_SPEED_FT_PER_MIN };
+// detectAllGaps groups strictly by pid (one specific shape) for its spatial
+// pdist math. A route that splits into two termini from one origin (e.g.
+// COTA Route 2: "TO REYNOLDSBURG" and "TO HAMILTON ROAD", each ~30 min alone,
+// ~15 min combined) gets tracked as two fully separate streams even though
+// riders experience one combined service — a bus running on the sibling
+// pattern doesn't "fill" a gap detected on the one being watched, producing
+// a false "no buses" post while a real bus passes through nearby. This
+// checks whether a sibling-pattern vehicle is currently geometrically inside
+// the gap's empty stretch, projected onto the *gap's own* pattern shape via
+// projectOntoShape — gated by `maxPerpFt` so a sibling that's already
+// diverged onto its own branch (large perpendicular distance from this
+// shape) correctly does NOT suppress the gap; only one still on the shared
+// trunk does. `resolveGroupDir(route, pattern)` should be the same resolver
+// passed to detectBusGhosts (src/shared/gtfs.js#resolveDirection in
+// production) so "sibling" means "same GTFS direction_id", not just
+// "same cardinal label". Pure; exported for testing.
+function isGapFilledBySibling({
+  gap,
+  pattern,
+  vehicles,
+  resolveGroupDir,
+  getPattern,
+  now = new Date(),
+  maxPerpFt = SIBLING_MAX_PERP_FT,
+}) {
+  const groupDir = resolveGroupDir(gap.route, pattern);
+  if (groupDir == null) return false;
+
+  const shapePoints = (pattern.points || []).map((p) => ({
+    lat: p.lat,
+    lon: p.lon,
+    distFt: p.pdist,
+  }));
+
+  const candidates = (vehicles || []).filter(
+    (v) => v.route === gap.route && v.pid !== gap.pid && now - v.tmstmp < STALE_MS,
+  );
+  for (const v of candidates) {
+    const siblingPattern = getPattern(v.pid);
+    if (!siblingPattern) continue;
+    if ((resolveGroupDir(gap.route, siblingPattern) ?? null) !== groupDir) continue;
+
+    const proj = projectOntoShape(v.lat, v.lon, shapePoints);
+    if (!proj || proj.perpFt > maxPerpFt) continue;
+    if (proj.distFt > gap.trailing.pdist && proj.distFt < gap.leading.pdist) return true;
+  }
+  return false;
+}
+
+module.exports = {
+  detectAllGaps,
+  isGapFilledBySibling,
+  RATIO_THRESHOLD,
+  ABSOLUTE_MIN_MIN,
+  TYPICAL_SPEED_FT_PER_MIN,
+  SIBLING_MAX_PERP_FT,
+};

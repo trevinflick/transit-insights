@@ -39,13 +39,13 @@ const Database = require('better-sqlite3');
 const DB_PATH =
   process.env.HISTORY_DB_PATH || Path.join(__dirname, '..', 'state', 'history.sqlite');
 
-const CHICAGO_TZ = 'America/Chicago';
+const LOCAL_TZ = 'America/New_York';
 // en-CA's default format for these options is YYYY-MM-DD (ISO 8601 order),
 // which is what we want for the date keys. The locale pick is purely about
 // component ordering — output is language-neutral digits, so this isn't a
 // statement about the audience. en-US would give MM/DD/YYYY here.
 const dayFmt = new Intl.DateTimeFormat('en-CA', {
-  timeZone: CHICAGO_TZ,
+  timeZone: LOCAL_TZ,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',

@@ -3,7 +3,11 @@ const Fs = require('fs-extra');
 const { getPattern } = require('./api');
 
 const CACHE_DIR = Path.join(__dirname, '..', '..', 'data', 'patterns');
-// 24h TTL so mid-week reroutes (detours, terminal moves) propagate within a day.
+// 24h TTL so a nightly GTFS refresh (new shapes, reroutes) propagates within a
+// day. getPattern() is now a synchronous index lookup (no live API call, so
+// no network flakiness to retry around), but src/shared/recap.js reads these
+// cached files directly off disk to resolve bunching-event locations for the
+// heatmap, so loadPattern must keep writing them as a side effect.
 const TTL_MS = 24 * 60 * 60 * 1000;
 
 // Length + first/last point — drift-detectable without re-fetching.
@@ -20,14 +24,7 @@ async function loadPattern(pid) {
     const age = Date.now() - Fs.statSync(cachePath).mtimeMs;
     if (age < TTL_MS) return Fs.readJsonSync(cachePath);
   }
-  let pattern;
-  try {
-    pattern = await getPattern(pid);
-  } catch (_e) {
-    // One-shot retry — ghost detection skips the entire route if this throws.
-    await new Promise((r) => setTimeout(r, 250));
-    pattern = await getPattern(pid);
-  }
+  const pattern = await getPattern(pid);
   pattern.signature = patternSignature(pattern);
   Fs.writeJsonSync(cachePath, pattern);
   return pattern;

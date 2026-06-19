@@ -3,7 +3,7 @@ require('../../src/shared/env');
 
 const argv = require('minimist')(process.argv.slice(2));
 
-const { names: routeNames, ghosts: ghostRoutes, allRoutes } = require('../../src/bus/routes');
+const { routeTitle, ghosts: ghostRoutes, allRoutes } = require('../../src/bus/routes');
 const { detectBusGhosts } = require('../../src/bus/ghosts');
 const { describeGhost } = require('../../src/shared/ghostFormat');
 const { buildRollupThread } = require('../../src/shared/post');
@@ -13,6 +13,7 @@ const {
   expectedHeadwayMin,
   expectedTripMinutes,
   expectedActiveTrips,
+  resolveDirection,
   loadIndex,
 } = require('../../src/shared/gtfs');
 const { getBusObservations, rolloffOldObservations } = require('../../src/shared/observations');
@@ -32,8 +33,7 @@ function abbreviateDirection(dir) {
 }
 
 function formatLine(event) {
-  const name = routeNames[event.route];
-  const title = name ? `Route ${event.route} (${name})` : `Route ${event.route}`;
+  const title = routeTitle(event.route);
   const dir = abbreviateDirection(event.direction);
   // Describe the *current* service: the parked-filtered, recent-window count.
   // describeGhost derives the counts and the headway from the same rounded
@@ -88,6 +88,7 @@ async function main() {
     expectedHeadway: (route, pattern) => expectedHeadwayMin(route, pattern, lookupAt),
     expectedDuration: (route, pattern) => expectedTripMinutes(route, pattern, lookupAt),
     expectedActive: (route, pattern) => expectedActiveTrips(route, pattern, lookupAt),
+    resolveGroupDir: (route, pattern) => resolveDirection({ ...pattern, route }),
     onDrop: (d) => drops.push(d),
   });
 

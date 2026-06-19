@@ -4,7 +4,7 @@ require('../../src/shared/env');
 const argv = require('minimist')(process.argv.slice(2));
 
 const { getVehiclesCachedOrFresh } = require('../../src/bus/api');
-const { allRoutes: bunchingRoutes } = require('../../src/bus/routes');
+const { allRoutes: bunchingRoutes, routeLabel } = require('../../src/bus/routes');
 const {
   detectAllBunching,
   computeGapBehind,
@@ -262,7 +262,7 @@ async function main() {
   const callouts = history.bunchingCallouts({
     kind: 'bus',
     route: bunch.route,
-    routeLabel: `Route ${bunch.route}`,
+    routeLabel: routeLabel(bunch.route),
     vehicleCount: bunch.vehicles.length,
     severityFt: bunch.spanFt,
   });

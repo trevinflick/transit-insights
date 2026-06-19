@@ -1,7 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { detectAllGaps, TYPICAL_SPEED_FT_PER_MIN, ABSOLUTE_MIN_MIN } = require('../../src/bus/gaps');
-const { bus, FRESH } = require('../helpers');
+const {
+  detectAllGaps,
+  isGapFilledBySibling,
+  TYPICAL_SPEED_FT_PER_MIN,
+  ABSOLUTE_MIN_MIN,
+} = require('../../src/bus/gaps');
+const { bus, FRESH, pointAtFt } = require('../helpers');
 
 const pattern = { direction: 'Northbound', lengthFt: 100000 };
 const expected = () => 10; // 10-min scheduled headway
@@ -107,4 +112,199 @@ test('sorts multiple gaps worst-first by ratio', () => {
   const gaps = detectAllGaps(vs, expected, patternFor, FRESH);
   assert.equal(gaps[0].pid, '200');
   assert.ok(gaps[0].ratio > gaps[1].ratio);
+});
+
+// --- isGapFilledBySibling: a sibling pattern's bus can cover a candidate gap --
+
+// Simple straight N-S line of `totalFt` length, with pdist on each point —
+// mirrors test/helpers.js's straightLine/pointAtFt train fixtures but with
+// the {lat, lon, pdist} shape projectOntoShape and detectAllGaps expect.
+function straightPattern(totalFt) {
+  const N = 20;
+  const points = [];
+  for (let i = 0; i <= N; i++) {
+    const pdist = (i / N) * totalFt;
+    const { lat, lon } = pointAtFt(totalFt, pdist);
+    points.push({ lat, lon, pdist, type: 'W' });
+  }
+  return { direction: 'Northbound', lengthFt: totalFt, points };
+}
+
+const SIBLING_LENGTH_FT = 100000;
+const siblingGap = { route: '2', pid: 'pA', trailing: { pdist: 10000 }, leading: { pdist: 40000 } };
+
+test('isGapFilledBySibling: a sibling on the shared trunk, inside the gap window, suppresses it', () => {
+  const pattern = straightPattern(SIBLING_LENGTH_FT);
+  const at = pointAtFt(SIBLING_LENGTH_FT, 25000);
+  const vehicles = [
+    bus({
+      vid: 's1',
+      pid: 'pB',
+      route: '2',
+      pdist: 25000,
+      lat: at.lat,
+      lon: at.lon,
+      tmstmp: FRESH,
+    }),
+  ];
+  const covered = isGapFilledBySibling({
+    gap: siblingGap,
+    pattern,
+    vehicles,
+    resolveGroupDir: () => 'dir0',
+    getPattern: () => ({ direction: 'Northbound', route: '2' }),
+    now: FRESH,
+  });
+  assert.equal(covered, true);
+});
+
+test('isGapFilledBySibling: a sibling already diverged onto its own branch (large perpFt) does not suppress it', () => {
+  const pattern = straightPattern(SIBLING_LENGTH_FT);
+  const at = pointAtFt(SIBLING_LENGTH_FT, 25000);
+  const vehicles = [
+    bus({
+      vid: 's1',
+      pid: 'pB',
+      route: '2',
+      pdist: 25000,
+      lat: at.lat,
+      lon: at.lon + 0.05, // ~14,000 ft east at this latitude — well off the trunk
+      tmstmp: FRESH,
+    }),
+  ];
+  const covered = isGapFilledBySibling({
+    gap: siblingGap,
+    pattern,
+    vehicles,
+    resolveGroupDir: () => 'dir0',
+    getPattern: () => ({ direction: 'Northbound', route: '2' }),
+    now: FRESH,
+  });
+  assert.equal(covered, false);
+});
+
+test('isGapFilledBySibling: a vehicle resolved to a different GTFS direction does not suppress it', () => {
+  const pattern = straightPattern(SIBLING_LENGTH_FT);
+  const at = pointAtFt(SIBLING_LENGTH_FT, 25000);
+  const vehicles = [
+    bus({
+      vid: 's1',
+      pid: 'pB',
+      route: '2',
+      pdist: 25000,
+      lat: at.lat,
+      lon: at.lon,
+      tmstmp: FRESH,
+    }),
+  ];
+  const covered = isGapFilledBySibling({
+    gap: siblingGap,
+    pattern,
+    vehicles,
+    resolveGroupDir: (_route, p) => (p.direction === 'Southbound' ? 'dir1' : 'dir0'),
+    getPattern: () => ({ direction: 'Southbound', route: '2' }),
+    now: FRESH,
+  });
+  assert.equal(covered, false);
+});
+
+test('isGapFilledBySibling: the same pid is never treated as a sibling', () => {
+  const pattern = straightPattern(SIBLING_LENGTH_FT);
+  const at = pointAtFt(SIBLING_LENGTH_FT, 25000);
+  const vehicles = [
+    bus({
+      vid: 's1',
+      pid: 'pA',
+      route: '2',
+      pdist: 25000,
+      lat: at.lat,
+      lon: at.lon,
+      tmstmp: FRESH,
+    }),
+  ];
+  const covered = isGapFilledBySibling({
+    gap: siblingGap,
+    pattern,
+    vehicles,
+    resolveGroupDir: () => 'dir0',
+    getPattern: () => ({ direction: 'Northbound', route: '2' }),
+    now: FRESH,
+  });
+  assert.equal(covered, false);
+});
+
+test('isGapFilledBySibling: a sibling outside the gap window (before trailing) does not suppress it', () => {
+  const pattern = straightPattern(SIBLING_LENGTH_FT);
+  const before = pointAtFt(SIBLING_LENGTH_FT, 5000);
+  const vehicles = [
+    bus({
+      vid: 's1',
+      pid: 'pB',
+      route: '2',
+      pdist: 5000,
+      lat: before.lat,
+      lon: before.lon,
+      tmstmp: FRESH,
+    }),
+  ];
+  const covered = isGapFilledBySibling({
+    gap: siblingGap,
+    pattern,
+    vehicles,
+    resolveGroupDir: () => 'dir0',
+    getPattern: () => ({ direction: 'Northbound', route: '2' }),
+    now: FRESH,
+  });
+  assert.equal(covered, false);
+});
+
+test('isGapFilledBySibling: a stale sibling observation does not suppress it', () => {
+  const pattern = straightPattern(SIBLING_LENGTH_FT);
+  const at = pointAtFt(SIBLING_LENGTH_FT, 25000);
+  const staleTs = FRESH - 10 * 60 * 1000; // 10 min old, beyond STALE_MS
+  const vehicles = [
+    bus({
+      vid: 's1',
+      pid: 'pB',
+      route: '2',
+      pdist: 25000,
+      lat: at.lat,
+      lon: at.lon,
+      tmstmp: staleTs,
+    }),
+  ];
+  const covered = isGapFilledBySibling({
+    gap: siblingGap,
+    pattern,
+    vehicles,
+    resolveGroupDir: () => 'dir0',
+    getPattern: () => ({ direction: 'Northbound', route: '2' }),
+    now: FRESH,
+  });
+  assert.equal(covered, false);
+});
+
+test('isGapFilledBySibling: a vehicle on a different route is never treated as a sibling', () => {
+  const pattern = straightPattern(SIBLING_LENGTH_FT);
+  const at = pointAtFt(SIBLING_LENGTH_FT, 25000);
+  const vehicles = [
+    bus({
+      vid: 's1',
+      pid: 'pB',
+      route: '99',
+      pdist: 25000,
+      lat: at.lat,
+      lon: at.lon,
+      tmstmp: FRESH,
+    }),
+  ];
+  const covered = isGapFilledBySibling({
+    gap: siblingGap,
+    pattern,
+    vehicles,
+    resolveGroupDir: () => 'dir0',
+    getPattern: () => ({ direction: 'Northbound', route: '99' }),
+    now: FRESH,
+  });
+  assert.equal(covered, false);
 });

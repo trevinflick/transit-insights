@@ -5,18 +5,17 @@ const {
   expectedHeadwayMin,
   resolveDirection,
   matchPattern,
-  expectedTrainActiveTripsAnyDir,
 } = require('../../src/shared/gtfs');
 
-// Fixed reference moments, all chosen so Chicago wall-clock is unambiguous
-// (mid-April 2026 is firmly in CDT, UTC-5).
-const SUN_1AM = new Date('2026-04-19T06:00:00Z'); // prior = saturday
-const MON_1AM = new Date('2026-04-20T06:00:00Z'); // prior = sunday
-const SAT_1AM = new Date('2026-04-18T06:00:00Z'); // prior = weekday (Fri)
-const TUE_2PM = new Date('2026-04-21T19:00:00Z'); // weekday daytime
-const SAT_2PM = new Date('2026-04-18T19:00:00Z'); // saturday daytime
-const _TUE_5AM = new Date('2026-04-21T10:00:00Z'); // just past late-night cutoff
-const SAT_5AM = new Date('2026-04-18T10:00:00Z'); // post-cutoff, prior (Fri weekday) != today (saturday)
+// Fixed reference moments, all chosen so Eastern wall-clock is unambiguous
+// (mid-April 2026 is firmly in EDT, UTC-4).
+const SUN_1AM = new Date('2026-04-19T05:00:00Z'); // prior = saturday
+const MON_1AM = new Date('2026-04-20T05:00:00Z'); // prior = sunday
+const SAT_1AM = new Date('2026-04-18T05:00:00Z'); // prior = weekday (Fri)
+const TUE_2PM = new Date('2026-04-21T18:00:00Z'); // weekday daytime
+const SAT_2PM = new Date('2026-04-18T18:00:00Z'); // saturday daytime
+const _TUE_5AM = new Date('2026-04-21T09:00:00Z'); // just past late-night cutoff
+const SAT_5AM = new Date('2026-04-18T09:00:00Z'); // post-cutoff, prior (Fri weekday) != today (saturday)
 
 test('hourlyLookup: daytime uses today, not prior', () => {
   assert.equal(hourlyLookup({ weekday: { 14: 9 }, sunday: { 14: 99 } }, TUE_2PM), 9);
@@ -146,18 +145,6 @@ test('expectedHeadwayMin: Route 22 at 1 AM Sunday returns data (24h route, via p
   };
   const hw = expectedHeadwayMin('22', pattern, SUN_1AM);
   assert.ok(hw != null && hw > 0, `expected non-null positive headway, got ${hw}`);
-});
-
-test('expectedTrainActiveTripsAnyDir returns 0 for unknown line', () => {
-  assert.equal(expectedTrainActiveTripsAnyDir('zzz', TUE_2PM), 0);
-});
-
-test('expectedTrainActiveTripsAnyDir is non-negative for known lines', () => {
-  // Skip the value check when local GTFS is empty/stale (CI).
-  for (const line of ['red', 'blue', 'g', 'org', 'p', 'pink', 'brn', 'y']) {
-    const v = expectedTrainActiveTripsAnyDir(line, TUE_2PM);
-    assert.ok(typeof v === 'number' && v >= 0, `${line} returned ${v}`);
-  }
 });
 
 // --- matchPattern: per-pattern (origin → dest) resolution -------------------

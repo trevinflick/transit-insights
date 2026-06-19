@@ -1,6 +1,6 @@
-// CTA Bus Tracker doesn't expose vehicle type. We classify by vid range,
-// sourced from chicagobus.org + chicagorailfan.com cross-checks. See
-// ./data/artics.json for ranges and provenance.
+// COTA's GTFS-realtime feed doesn't expose vehicle type. We'd classify by vid
+// range the same way CTA's fleet was, but COTA's articulated-bus ranges
+// aren't catalogued yet — see ./data/artics.json (empty for now).
 const articData = require('./data/artics.json');
 
 const RANGES = Array.isArray(articData?.articRanges) ? articData.articRanges : [];

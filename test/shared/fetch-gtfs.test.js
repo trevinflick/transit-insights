@@ -4,6 +4,8 @@ const {
   computeBusDominantOrigin,
   BUS_DOMINANCE_THRESHOLD,
   resolveServiceDayTypes,
+  computeFallbackHeadway,
+  resolveHourlyHeadway,
 } = require('../../scripts/fetch-gtfs');
 
 function mkTrips(spec) {
@@ -40,14 +42,6 @@ test('dominance skips the key when the top origin is under 60% (keeps all origin
   ]);
   const dom = computeBusDominantOrigin(tripMeta, firstStopId);
   assert.equal(dom.has('66|1'), false);
-});
-
-test('rail trips are ignored entirely', () => {
-  const { tripMeta, firstStopId } = mkTrips([
-    { route: 'Red', dir: '0', origin: 'HOWARD', count: 100, mode: 'rail' },
-  ]);
-  const dom = computeBusDominantOrigin(tripMeta, firstStopId);
-  assert.equal(dom.size, 0);
 });
 
 test('exactly 60% qualifies (>= threshold, not strictly greater)', () => {
@@ -164,4 +158,103 @@ test('staggered two-origin scenario: dominant terminal drives bucketing', () => 
   ]);
   const dom = computeBusDominantOrigin(tripMeta, firstStopId);
   assert.equal(dom.get('20|0'), 'TERMINAL');
+});
+
+// --- computeFallbackHeadway: coarse headway for branch-alternating routes --
+
+// Departure seconds-since-midnight for a route alternating between two
+// termini every ~15 min (the real Route 33 / CMAX shape) — each branch
+// individually never gets 2 same-hour departures, but the route overall
+// runs every ~30 min, which is what the fallback should recover.
+function depsEveryNMin(startMin, count, stepMin) {
+  return Array.from({ length: count }, (_, i) => (startMin + i * stepMin) * 60);
+}
+
+test('computeFallbackHeadway: accepts a consistent ~30 min spaced day of departures', () => {
+  const deps = depsEveryNMin(300, 30, 30); // 5:00 AM, every 30 min, 30 trips
+  assert.equal(computeFallbackHeadway(deps), 30);
+});
+
+test('computeFallbackHeadway: rejects a 2-trip AM/PM commuter shuttle (huge gap)', () => {
+  const deps = [6 * 3600 + 43 * 60, 17 * 3600 + 3 * 60]; // 6:43 AM, 5:03 PM
+  assert.equal(computeFallbackHeadway(deps), null);
+});
+
+test('computeFallbackHeadway: rejects fewer than minTrips even if evenly spaced', () => {
+  const deps = depsEveryNMin(300, 3, 30); // only 3 trips, default minTrips=4
+  assert.equal(computeFallbackHeadway(deps), null);
+});
+
+test('computeFallbackHeadway: rejects when the median gap exceeds maxGapMin', () => {
+  const deps = depsEveryNMin(300, 5, 150); // 5 trips, 150 min apart
+  assert.equal(computeFallbackHeadway(deps), null);
+});
+
+test('computeFallbackHeadway: accepts right at the minTrips/maxGapMin boundary', () => {
+  const deps = depsEveryNMin(300, 4, 120); // exactly 4 trips, exactly 120 min apart
+  assert.equal(computeFallbackHeadway(deps), 120);
+});
+
+test('computeFallbackHeadway: custom minTrips/maxGapMin thresholds are honored', () => {
+  const deps = depsEveryNMin(300, 3, 45);
+  assert.equal(computeFallbackHeadway(deps, { minTrips: 3 }), 45);
+  assert.equal(computeFallbackHeadway(deps, { minTrips: 3, maxGapMin: 30 }), null);
+});
+
+test('computeFallbackHeadway: null/empty input returns null', () => {
+  assert.equal(computeFallbackHeadway(null), null);
+  assert.equal(computeFallbackHeadway([]), null);
+});
+
+test('computeFallbackHeadway: unsorted input is sorted before measuring gaps', () => {
+  const deps = depsEveryNMin(300, 6, 20);
+  const shuffled = [deps[3], deps[0], deps[5], deps[1], deps[4], deps[2]];
+  assert.equal(computeFallbackHeadway(shuffled), 20);
+});
+
+// --- resolveHourlyHeadway: per-(pattern,hour) headway, robust to paired departures --
+
+function mkTimes(minuteOffsets) {
+  return minuteOffsets.map((m) => m * 60);
+}
+
+test('resolveHourlyHeadway: evenly-spaced departures use the plain median', () => {
+  // 4 departures, 15 min apart — the common case.
+  assert.equal(resolveHourlyHeadway(mkTimes([0, 15, 30, 45])), 15);
+});
+
+test('resolveHourlyHeadway: real Route 8 pairing (8,21,8) resolves to the count-based ~15, not the median 8', () => {
+  // The actual confirmed-bad case: COTA's PDF timetable says every 15 min;
+  // GTFS shows two buses ~8 min apart then a ~21 min gap before the next
+  // pair. Median-of-gaps would read 8 (the more common short gap) — wrong.
+  const times = mkTimes([13, 21, 42, 50]); // gaps: 8, 21, 8
+  assert.equal(resolveHourlyHeadway(times), 15);
+});
+
+test('resolveHourlyHeadway: mild jitter stays under the threshold and keeps the median', () => {
+  // gaps of 15 and 20 — a 1.33x ratio, ordinary scheduling jitter, not pairing.
+  const times = mkTimes([0, 15, 35]);
+  assert.equal(resolveHourlyHeadway(times), 17.5);
+});
+
+test('resolveHourlyHeadway: exactly one gap (2 departures) never triggers the irregularity check', () => {
+  // Nothing to compare a lone gap against — keep the literal gap, no count-based override.
+  assert.equal(resolveHourlyHeadway(mkTimes([0, 16])), 16);
+});
+
+test('resolveHourlyHeadway: custom irregularRatioThreshold is honored', () => {
+  const times = mkTimes([0, 10, 25]); // gaps: 10, 15 -> ratio 1.5
+  assert.equal(resolveHourlyHeadway(times), 12.5); // default threshold (2) keeps median
+  assert.equal(resolveHourlyHeadway(times, { irregularRatioThreshold: 1.4 }), 20); // 60/3, count-based
+});
+
+test('resolveHourlyHeadway: fewer than 2 departures returns null', () => {
+  assert.equal(resolveHourlyHeadway([]), null);
+  assert.equal(resolveHourlyHeadway(mkTimes([0])), null);
+  assert.equal(resolveHourlyHeadway(null), null);
+});
+
+test('resolveHourlyHeadway: unsorted input is sorted before measuring gaps', () => {
+  const times = mkTimes([30, 0, 45, 15]);
+  assert.equal(resolveHourlyHeadway(times), 15);
 });

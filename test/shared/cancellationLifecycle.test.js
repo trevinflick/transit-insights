@@ -149,7 +149,7 @@ test('finalizeCancellation flips the label, dates resolved_ts to departure, stor
 test('an annulment announced after departure dates resolved_ts to first_seen, never negative', () => {
   const { history, cleanup } = loadHistoryWithDb(freshDbPath());
   try {
-    const firstSeen = Date.UTC(2026, 5, 10, 1, 49, 0); // 8:49pm CDT — after the 8:40 departure
+    const firstSeen = Date.UTC(2026, 5, 10, 1, 49, 0); // 8:49pm local — after the 8:40 departure
     seedAlert(history, 'a1', firstSeen);
     const dep = Date.UTC(2026, 5, 10, 1, 40, 0); // 8:40pm — before we saw the alert
     history.recordCancellation({

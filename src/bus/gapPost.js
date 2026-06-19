@@ -1,4 +1,4 @@
-const { names: routeNames } = require('./routes');
+const { routeTitle } = require('./routes');
 const { formatCallouts } = require('../shared/history');
 const {
   formatMinutes,
@@ -6,11 +6,6 @@ const {
   formatDistance,
   formatDeviation,
 } = require('../shared/format');
-
-function routeTitle(route) {
-  const name = routeNames[route];
-  return name ? `Route ${route} (${name})` : `Route ${route}`;
-}
 
 function buildPostText(gap, pattern, stop, callouts = [], opts = {}) {
   // `leading` is the bus already past the gap (last seen); `trailing` is the

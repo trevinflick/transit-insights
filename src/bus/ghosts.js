@@ -34,6 +34,20 @@ async function detectBusGhosts({
   expectedHeadway,
   expectedDuration,
   expectedActive,
+  // Grouping key for "which buses count toward the same expected-active
+  // bucket". Defaults to the pattern's own cardinal label (today's exact
+  // behavior) — but that label is computed per-pattern from each shape's own
+  // start/end bearing, so two patterns that are genuinely the same direction
+  // (e.g. a route that splits into two termini from one origin, each ~30 min
+  // alone) can read different cardinal labels if their bearings straddle a
+  // 90° bucket boundary (confirmed on COTA Route 2: 122.6° vs 135.5°, 13°
+  // apart, opposite buckets). expectedActive is already computed at the
+  // GTFS-direction level (combining every pattern in that direction), so a
+  // mismatched cardinal-label subgroup gets compared against the *combined*
+  // expected count and reads as missing most of its buses. Pass the real
+  // GTFS direction_id resolver (src/shared/gtfs.js#resolveDirection) from
+  // bin/bus/ghosts.js to align grouping with how expectedActive is computed.
+  resolveGroupDir = (_route, pattern) => pattern.direction,
   onDrop,
 }) {
   const events = [];
@@ -81,17 +95,25 @@ async function detectBusGhosts({
       continue;
     }
 
-    // Group by rider-facing direction label so weekday/express pid variants merge.
+    // Group by resolved GTFS direction so multi-pattern variants (weekday/
+    // express pid splits, or a route that branches into two termini from one
+    // origin) merge into the same bucket expectedActive is computed against.
+    // labelCounts tracks each contributing pattern's cardinal display label so
+    // the more-observed one wins for the post text — the merge key itself
+    // doesn't need to be human-readable.
     const byDir = new Map();
     for (const o of obs) {
       const pattern = patternByPid.get(o.direction);
       if (!pattern) continue;
-      const label = pattern.direction;
-      if (!byDir.has(label)) byDir.set(label, { obs: [], pattern });
-      byDir.get(label).obs.push(o);
+      const groupKey = resolveGroupDir(route, pattern) ?? pattern.direction;
+      if (!byDir.has(groupKey)) byDir.set(groupKey, { obs: [], pattern, labelCounts: new Map() });
+      const group = byDir.get(groupKey);
+      group.obs.push(o);
+      group.labelCounts.set(pattern.direction, (group.labelCounts.get(pattern.direction) || 0) + 1);
     }
 
-    for (const [direction, group] of byDir) {
+    for (const group of byDir.values()) {
+      const direction = [...group.labelCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
       const ctx = { route, direction };
       const headway = expectedHeadway(route, group.pattern);
       const duration = expectedDuration(route, group.pattern);

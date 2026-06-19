@@ -72,15 +72,15 @@ function postUrl(result) {
   return `https://bsky.app/profile/${did}/post/${rkey}`;
 }
 
-const TRANSIT_CHICAGO_URL = 'https://www.transitchicago.com/';
+const COTA_URL = 'https://www.cota.com/';
 
-// CTA alert posts mention the bare domain "transitchicago.com" in their body,
+// Alert-style posts may mention the bare domain "cota.com" in their body,
 // but image/video/text posts carry no facets, so the domain isn't tappable.
-// Build a richtext link facet over that mention pointing at the CTA homepage.
+// Build a richtext link facet over that mention pointing at the COTA homepage.
 // Returns undefined when the text doesn't mention the domain (e.g. analytics
 // or bunching posts), so it's safe to call on every post.
-function transitChicagoFacets(text) {
-  const needle = 'transitchicago.com';
+function cotaLinkFacets(text) {
+  const needle = 'cota.com';
   const idx = text.indexOf(needle);
   if (idx < 0) return undefined;
   const enc = (s) => Buffer.byteLength(s, 'utf8');
@@ -90,14 +90,14 @@ function transitChicagoFacets(text) {
         byteStart: enc(text.slice(0, idx)),
         byteEnd: enc(text.slice(0, idx + needle.length)),
       },
-      features: [{ $type: 'app.bsky.richtext.facet#link', uri: TRANSIT_CHICAGO_URL }],
+      features: [{ $type: 'app.bsky.richtext.facet#link', uri: COTA_URL }],
     },
   ];
 }
 
 async function postWithImage(agent, text, imageBuffer, altText, replyRef = null) {
   const upload = await agent.uploadBlob(imageBuffer, { encoding: 'image/jpeg' });
-  const facets = transitChicagoFacets(text);
+  const facets = cotaLinkFacets(text);
   const result = await agent.post({
     text,
     ...(replyRef && { reply: replyRef }),
@@ -183,7 +183,7 @@ async function postWithVideo(agent, text, videoBuffer, altText, replyRef = null)
     }
   }
 
-  const facets = transitChicagoFacets(text);
+  const facets = cotaLinkFacets(text);
   const result = await agent.post({
     text,
     ...(replyRef && { reply: replyRef }),
@@ -199,7 +199,7 @@ async function postWithVideo(agent, text, videoBuffer, altText, replyRef = null)
 }
 
 async function postText(agent, text, replyRef = null) {
-  const facets = transitChicagoFacets(text);
+  const facets = cotaLinkFacets(text);
   const result = await agent.post({
     text,
     ...(replyRef && { reply: replyRef }),

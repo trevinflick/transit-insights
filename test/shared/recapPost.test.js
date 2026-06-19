@@ -52,7 +52,7 @@ test('buildPostText handles an empty window cleanly', () => {
 
 test('buildAltText summarizes the map for screen readers', () => {
   const alt = buildAltText({ mode: 'bus', window: 'month', points, totalIncidents: 18 });
-  assert.ok(alt.includes('Heatmap of Chicago'));
+  assert.ok(alt.includes('Heatmap of Columbus'));
   assert.ok(alt.includes('18 bunches'));
   assert.ok(alt.includes('4 stops'));
   assert.ok(alt.includes('Foster & Marine Drive (7)'));

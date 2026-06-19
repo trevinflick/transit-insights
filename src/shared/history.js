@@ -1295,7 +1295,7 @@ function clearBusPulseState(route) {
 function chicagoStartOfDay(ts) {
   const d = new Date(ts);
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
+    timeZone: 'America/New_York',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -1696,7 +1696,7 @@ const RUSH_BOUNDARIES_HOURS = [5, 10, 15, 20];
 function chicagoStartOfRushPeriod(ts) {
   const dayStart = chicagoStartOfDay(ts);
   const ctParts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
+    timeZone: 'America/New_York',
     hour: '2-digit',
     hour12: false,
   }).formatToParts(new Date(ts));

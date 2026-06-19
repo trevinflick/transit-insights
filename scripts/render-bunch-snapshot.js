@@ -404,7 +404,7 @@ async function main() {
   const tsStr =
     new Date(ts)
       .toLocaleString('en-US', {
-        timeZone: 'America/Chicago',
+        timeZone: 'America/New_York',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
@@ -413,7 +413,7 @@ async function main() {
         second: '2-digit',
         hour12: false,
       })
-      .replace(',', '') + ' CDT';
+      .replace(',', '') + ' ET';
   const tsFs = 22,
     legendFs = 24,
     lineH = 36,

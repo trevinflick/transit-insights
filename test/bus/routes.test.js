@@ -1,7 +1,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadIndex } = require('../../src/shared/gtfs');
-const { ghosts, gaps, lowFrequency, allRoutes, names } = require('../../src/bus/routes');
+const {
+  ghosts,
+  gaps,
+  lowFrequency,
+  allRoutes,
+  names,
+  routeShortName,
+  routeLabel,
+  routeTitle,
+} = require('../../src/bus/routes');
 
 // Gaps and ghosts both *require* GTFS lookups (headway/expected-active gates)
 // — a missing index entry there silently disables detection. allRoutes is
@@ -36,16 +45,30 @@ test('lowFrequency does not overlap with gaps or ghosts', () => {
   assert.deepEqual(overlap, []);
 });
 
-// Night Owl routes that shadow a daytime number (N87 ↔ 87, N22 ↔ 22, …) are
-// excluded from polling: CTA's getvehicles reports overnight vehicles under
-// the daytime route_id, so the N-variant only ever returns "no data found".
-// N5 is the exception — no daytime "5" exists, so CTA tracks it as its own
-// route. Guards against accidental re-introduction of dead N* polling.
-test('allRoutes excludes shadowed Night Owl routes but keeps N5', () => {
-  const nightInList = allRoutes.filter((r) => /^N\d/.test(r));
-  assert.deepEqual(nightInList, ['N5']);
-  // Sanity: every excluded N* is still present in `names` for alert display.
-  const excluded = Object.keys(names).filter((r) => /^N\d/.test(r) && r !== 'N5');
-  assert.ok(excluded.length > 0, 'expected at least one shadowed N* route in names');
-  for (const r of excluded) assert.ok(names[r], `${r} should remain in names map`);
+// COTA's GTFS-realtime route_id is the join key everywhere (live feed and
+// static schedule agree exactly — no suffix/shadow quirk like CTA's Night
+// Owl routes), so allRoutes should be exactly every route in `names`.
+test('allRoutes is exactly every route in names, zero-padded', () => {
+  assert.deepEqual(new Set(allRoutes), new Set(Object.keys(names)));
+  for (const r of allRoutes)
+    assert.match(r, /^\d{3}$/, `expected a zero-padded route_id, got ${r}`);
+});
+
+test('routeShortName strips zero-padding for display, except CMAX', () => {
+  assert.equal(routeShortName('002'), '2');
+  assert.equal(routeShortName('023'), '23');
+  assert.equal(routeShortName('102'), '102');
+  assert.equal(routeShortName('101'), 'CMAX');
+});
+
+test('routeLabel reads "Route N" for numbered routes and bare "CMAX" for the branded line', () => {
+  assert.equal(routeLabel('002'), 'Route 2');
+  assert.equal(routeLabel('023'), 'Route 23');
+  assert.equal(routeLabel('101'), 'CMAX');
+});
+
+test('routeTitle includes the descriptive name without a redundant "Route CMAX (CMAX)"', () => {
+  assert.equal(routeTitle('002'), 'Route 2 (E Main/N High)');
+  assert.equal(routeTitle('023'), 'Route 23 (James-Stelzer)');
+  assert.equal(routeTitle('101'), 'CMAX');
 });

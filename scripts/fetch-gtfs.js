@@ -11,19 +11,19 @@ const readline = require('node:readline');
 
 const execAsync = promisify(exec);
 
-const GTFS_URL = 'https://www.transitchicago.com/downloads/sch_data/google_transit.zip';
-const ZIP_PATH = '/tmp/cta-gtfs.zip';
+const { withCumulativeDistFt, projectOntoShape } = require('../src/bus/shapeProjection');
+
+const GTFS_URL = 'https://www.cota.com/data/cota.gtfs.zip';
+const ZIP_PATH = '/tmp/cota-gtfs.zip';
 const OUT_PATH = Path.join(__dirname, '..', 'data', 'gtfs', 'index.json');
 // Per-trip scheduled stop curves for bus schedule-adherence (scheduleDeviationMin).
 // Kept in SQLite, not index.json — it's ~1M+ rows (every bus trip × every stop).
 const SCHED_DB_PATH = Path.join(__dirname, '..', 'data', 'gtfs', 'schedule.sqlite');
 
-// Index every active CTA bus route so any consumer (bunching, speedmap,
-// pulse, gaps, ghosts) can resolve schedule data without per-list bookkeeping.
-// Rail is always all 8 lines.
+// Index every active COTA route so any consumer (bunching, speedmap, gaps,
+// ghosts) can resolve schedule data without per-list bookkeeping.
 const { allRoutes } = require('../src/bus/routes');
 const BUS_ROUTES = [...allRoutes].sort();
-const RAIL_ROUTES = ['Red', 'Blue', 'Brn', 'G', 'Org', 'P', 'Pink', 'Y'];
 
 async function downloadGtfs() {
   if (Fs.existsSync(ZIP_PATH)) {
@@ -110,6 +110,55 @@ function median(arr) {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+// Coarse fallback headway for routes whose per-pattern, per-hour headway
+// computation produced nothing — e.g. a route that alternates between two
+// termini from the same origin every ~30 min, so each branch individually
+// never gets 2 same-pattern departures within one clock hour even though the
+// route overall runs fine. Ignores pattern and hour-of-day entirely: just the
+// median gap across every same-direction departure that day-type. Guarded by
+// `minTrips` (a 2-trip AM/PM commuter shuttle shouldn't produce a "headway"
+// from one giant gap) and `maxGapMin` (an AM/PM shuttle's multi-hour gap
+// isn't a usable "is this route still running" signal even with 2+ trips).
+// Pure; exported for testing.
+function computeFallbackHeadway(departureSeconds, { minTrips = 4, maxGapMin = 120 } = {}) {
+  if (!departureSeconds || departureSeconds.length < minTrips) return null;
+  const sorted = [...departureSeconds].sort((a, b) => a - b);
+  const gaps = [];
+  for (let i = 1; i < sorted.length; i++) gaps.push((sorted[i] - sorted[i - 1]) / 60);
+  const medMin = median(gaps);
+  if (medMin == null || medMin > maxGapMin) return null;
+  return Math.round(medMin * 10) / 10;
+}
+
+// Headway for one (pattern, dayType, hour) bucket. Default is the median of
+// consecutive departure gaps — correct when departures are roughly evenly
+// spaced. But some routes run in close PAIRS (e.g. two buses ~8 min apart,
+// then a longer gap before the next pair) — confirmed against COTA's real
+// published Route 8 timetable: this hour-bucketed gap data read 8-11 min,
+// the PDF schedule says 15. The median there just picks whichever gap length
+// happens to be more common in this hour's small sample, not the rider-facing
+// average spacing. Detected via the ratio between the largest and smallest
+// gap in the bucket (a clean, evenly-spaced schedule keeps this near 1;
+// pairing pushes it well past `irregularRatioThreshold`) — when triggered,
+// falls back to a count-based estimate (60 min / departures this hour), which
+// is insensitive to how those departures happen to cluster within the hour.
+// Pure; exported for testing.
+function resolveHourlyHeadway(times, { irregularRatioThreshold = 2 } = {}) {
+  if (!times || times.length < 2) return null;
+  const sorted = [...times].sort((a, b) => a - b);
+  const gaps = [];
+  for (let i = 1; i < sorted.length; i++) gaps.push((sorted[i] - sorted[i - 1]) / 60);
+  if (gaps.length >= 2) {
+    const maxGap = Math.max(...gaps);
+    const minGap = Math.min(...gaps);
+    if (minGap > 0 && maxGap / minGap > irregularRatioThreshold) {
+      return Math.round((60 / sorted.length) * 10) / 10;
+    }
+  }
+  const medMin = median(gaps);
+  return medMin == null ? null : Math.round(medMin * 10) / 10;
+}
+
 // Coarse day_type bucket — Sat/Sun stay separate since headways differ a lot.
 function dayTypeFor(cal) {
   const weekday =
@@ -159,7 +208,6 @@ const BUS_DOMINANCE_THRESHOLD = 0.6;
 function computeBusDominantOrigin(tripMeta, firstStopId, { log = false } = {}) {
   const counts = new Map();
   for (const [tripId, meta] of tripMeta) {
-    if (meta.mode !== 'bus') continue;
     const origin = firstStopId.get(tripId);
     if (!origin) continue;
     const k = `${meta.route}|${meta.dir}`;
@@ -270,7 +318,7 @@ async function main() {
     );
   }
   const todayDow = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
+    timeZone: 'America/New_York',
     weekday: 'short',
   }).format(today);
   const { serviceDayType, addForToday, removeForToday } = resolveServiceDayTypes({
@@ -286,14 +334,9 @@ async function main() {
   console.log('Reading trips.txt...');
   const trips = parseCsv(await readFromZip('trips.txt'));
   const busRouteSet = new Set(BUS_ROUTES);
-  const railRouteSet = new Set(RAIL_ROUTES);
-  // tripMeta.mode (bus|rail) routes results to `routes` or `lines` output bucket.
   const tripMeta = new Map();
   for (const t of trips) {
-    let mode = null;
-    if (busRouteSet.has(t.route_id)) mode = 'bus';
-    else if (railRouteSet.has(t.route_id)) mode = 'rail';
-    if (!mode) continue;
+    if (!busRouteSet.has(t.route_id)) continue;
     const dt = serviceDayType.get(t.service_id);
     if (!dt) continue;
     tripMeta.set(t.trip_id, {
@@ -302,12 +345,10 @@ async function main() {
       dayType: dt,
       serviceId: t.service_id,
       headsign: t.trip_headsign || t.direction || '',
-      mode,
+      shapeId: t.shape_id || null,
     });
   }
-  const busCount = [...tripMeta.values()].filter((m) => m.mode === 'bus').length;
-  const railCount = tripMeta.size - busCount;
-  console.log(`  ${busCount} bus trips, ${railCount} rail trips in scope`);
+  console.log(`  ${tripMeta.size} bus trips in scope`);
 
   console.log('Streaming stop_times.txt...');
   // Per trip: first-stop departure (min stop_sequence) and last-stop id (max).
@@ -342,14 +383,12 @@ async function main() {
     const tripId = parts[tripIdIdx];
     if (!tripMeta.has(tripId)) return;
     const seq = parseInt(parts[seqIdx], 10);
-    if (tripMeta.get(tripId).mode === 'bus') {
-      if (!busTripStops.has(tripId)) busTripStops.set(tripId, []);
-      busTripStops.get(tripId).push({
-        seq,
-        stopId: parts[stopIdIdx],
-        schedSec: parseGtfsTime(parts[arrIdx]),
-      });
-    }
+    if (!busTripStops.has(tripId)) busTripStops.set(tripId, []);
+    busTripStops.get(tripId).push({
+      seq,
+      stopId: parts[stopIdIdx],
+      schedSec: parseGtfsTime(parts[arrIdx]),
+    });
     const prevFirst = firstSeq.get(tripId);
     if (prevFirst === undefined || seq < prevFirst) {
       firstSeq.set(tripId, seq);
@@ -425,9 +464,16 @@ async function main() {
   const durationBuckets = new Map(); // same key → [durMin,...]
   const patternTripCount = new Map(); // route|dir|origin|dest → total trips
   const patternHeadsign = new Map(); // route|dir|origin|dest → headsign
+  // Unfiltered departures per (route,dir,dayType) — no pattern split, no hour
+  // bucketing — the substrate for computeFallbackHeadway when a route's
+  // per-pattern headway computation produces nothing (see that function).
+  const allDeparturesByRouteDirDayType = new Map();
   for (const [tripId, meta] of tripMeta) {
     const dep = firstDeparture.get(tripId);
     if (dep == null) continue;
+    const rddKey = `${meta.route}|${meta.dir}|${meta.dayType}`;
+    if (!allDeparturesByRouteDirDayType.has(rddKey)) allDeparturesByRouteDirDayType.set(rddKey, []);
+    allDeparturesByRouteDirDayType.get(rddKey).push(dep);
     const hour = Math.floor(dep / 3600) % 24;
     const dominant = dominantService.get(`${meta.route}|${meta.dir}|${meta.dayType}|${hour}`);
     if (!dominant || dominant.serviceId !== meta.serviceId) continue;
@@ -447,22 +493,15 @@ async function main() {
     }
   }
 
-  // Bucket keys are mode-agnostic — split into routes/lines at output time.
-  const routeMode = new Map();
-  for (const meta of tripMeta.values()) routeMode.set(meta.route, meta.mode);
-
   // Fold per-(pattern, dayType, hour) buckets into per-pattern headway/duration
-  // maps, taking the median of consecutive departure gaps within each pattern.
+  // maps — see resolveHourlyHeadway for how a bucket's headway is derived.
   const patternData = new Map(); // route|dir → Map(origin|dest → { origin, dest, headways, durations })
   for (const [key, times] of headwayBuckets) {
     if (times.length < 2) continue; // need 2 departures to measure a gap
     const [route, dir, origin, dest, dayType, hourStr] = key.split('|');
     const hour = parseInt(hourStr, 10);
-    const sorted = [...times].sort((a, b) => a - b);
-    const gaps = [];
-    for (let i = 1; i < sorted.length; i++) gaps.push((sorted[i] - sorted[i - 1]) / 60);
-    const medMin = median(gaps);
-    if (medMin == null) continue;
+    const headwayMin = resolveHourlyHeadway(times);
+    if (headwayMin == null) continue;
     const rd = `${route}|${dir}`;
     if (!patternData.has(rd)) patternData.set(rd, new Map());
     const pm = patternData.get(rd);
@@ -470,7 +509,7 @@ async function main() {
     if (!pm.has(pk)) pm.set(pk, { origin, dest, headways: {}, durations: {} });
     const pat = pm.get(pk);
     if (!pat.headways[dayType]) pat.headways[dayType] = {};
-    pat.headways[dayType][hour] = Math.round(medMin * 10) / 10;
+    pat.headways[dayType][hour] = headwayMin;
     const durations = durationBuckets.get(key);
     if (durations && durations.length > 0) {
       const medDur = median(durations);
@@ -485,7 +524,7 @@ async function main() {
   // pattern's endpoints to the right group) plus the dominant pattern's
   // headway/duration/terminals hoisted to the direction level — a fallback for
   // patternless consumers and for live patterns that match no group.
-  const out = { generatedAt: Date.now(), routes: {}, lines: {} };
+  const out = { generatedAt: Date.now(), routes: {}, trips: {}, shapes: {} };
   for (const [rd, pm] of patternData) {
     const [route, dir] = rd.split('|');
     const list = [];
@@ -508,9 +547,8 @@ async function main() {
     if (list.length === 0) continue;
     list.sort((a, b) => b.tripCount - a.tripCount); // dominant pattern first
     const dom = list[0];
-    const bucket = routeMode.get(route) === 'rail' ? out.lines : out.routes;
-    if (!bucket[route]) bucket[route] = {};
-    bucket[route][dir] = {
+    if (!out.routes[route]) out.routes[route] = {};
+    out.routes[route][dir] = {
       headsign: dom.headsign,
       terminalLat: dom.terminalLat,
       terminalLon: dom.terminalLon,
@@ -523,24 +561,144 @@ async function main() {
   }
 
   // Active-trip counts emit separately — hours with zero starts can still
-  // have trips in progress that began earlier.
+  // have trips in progress that began earlier. Create the route/dir entry
+  // here too (not just from the headway-bearing pattern loop above) — a
+  // route whose patterns never individually got 2 same-hour departures
+  // (e.g. one that alternates between two termini from the same origin)
+  // still has perfectly good activeByHour data and shouldn't lose it for
+  // lack of a headway-bearing pattern.
   for (const [key, count] of activeBuckets) {
     const [route, dir, dayType, hourStr] = key.split('|');
     const hour = parseInt(hourStr, 10);
-    const bucket = routeMode.get(route) === 'rail' ? out.lines : out.routes;
-    if (!bucket[route]?.[dir]) continue;
-    if (!bucket[route][dir].activeByHour) bucket[route][dir].activeByHour = {};
-    if (!bucket[route][dir].activeByHour[dayType]) bucket[route][dir].activeByHour[dayType] = {};
-    bucket[route][dir].activeByHour[dayType][hour] = Math.round(count * 10) / 10;
+    if (!out.routes[route]) out.routes[route] = {};
+    if (!out.routes[route][dir]) {
+      out.routes[route][dir] = {
+        headsign: null,
+        terminalLat: null,
+        terminalLon: null,
+        originLat: null,
+        originLon: null,
+        headways: {},
+        durations: {},
+        patterns: [],
+      };
+    }
+    if (!out.routes[route][dir].activeByHour) out.routes[route][dir].activeByHour = {};
+    if (!out.routes[route][dir].activeByHour[dayType])
+      out.routes[route][dir].activeByHour[dayType] = {};
+    out.routes[route][dir].activeByHour[dayType][hour] = Math.round(count * 10) / 10;
   }
+
+  // Coarse fallback headway: routes whose per-pattern computation produced no
+  // headway at all (branch-alternating routes — see computeFallbackHeadway)
+  // still need *some* headway value for expectedBusRouteHeadwayMin /
+  // bin/bus/thin-gaps.js to size its detection window. Only fills hours that
+  // already have activeByHour data, and only when the route has enough
+  // same-direction trips at a sane-enough spacing — see computeFallbackHeadway's
+  // minTrips/maxGapMin guards.
+  for (const [route, byDir] of Object.entries(out.routes)) {
+    for (const [dir, info] of Object.entries(byDir)) {
+      if (Object.keys(info.headways).length > 0) continue; // already has real per-pattern headway
+      for (const dayType of Object.keys(info.activeByHour || {})) {
+        const departures = allDeparturesByRouteDirDayType.get(`${route}|${dir}|${dayType}`);
+        const fallback = computeFallbackHeadway(departures);
+        if (fallback == null) continue;
+        if (!info.headways[dayType]) info.headways[dayType] = {};
+        for (const hour of Object.keys(info.activeByHour[dayType])) {
+          info.headways[dayType][hour] = fallback;
+        }
+      }
+    }
+  }
+
+  // trip_id → { route, dir, shapeId } so the GTFS-realtime adapter (src/bus/api.js)
+  // can resolve a live vehicle's true direction_id and shape — COTA's realtime
+  // direction_id doesn't reliably match the static schedule's for the same trip,
+  // so this lookup, not the live field, is the source of truth.
+  for (const [tripId, meta] of tripMeta) {
+    out.trips[tripId] = { route: meta.route, dir: meta.dir, shapeId: meta.shapeId };
+  }
+
+  console.log('Reading shapes.txt...');
+  const usedShapeIds = new Set([...tripMeta.values()].map((m) => m.shapeId).filter(Boolean));
+  let shapeRows = [];
+  try {
+    shapeRows = parseCsv(await readFromZip('shapes.txt'));
+  } catch (e) {
+    console.warn(
+      `  could not read shapes.txt: ${e.message} — pdist projection will be unavailable`,
+    );
+  }
+  const shapePoints = new Map(); // shape_id → [{ lat, lon, seq }]
+  for (const r of shapeRows) {
+    if (!usedShapeIds.has(r.shape_id)) continue;
+    if (!shapePoints.has(r.shape_id)) shapePoints.set(r.shape_id, []);
+    shapePoints.get(r.shape_id).push({
+      lat: parseFloat(r.shape_pt_lat),
+      lon: parseFloat(r.shape_pt_lon),
+      seq: parseInt(r.shape_pt_sequence, 10),
+    });
+  }
+  // Pick one representative trip per shape_id (the one with the most stops,
+  // for the most complete stop list) to merge named stops into the shape's
+  // point list — CTA's BusTime pattern is exactly this: an ordered polyline
+  // with stop waypoints (type 'S') interleaved. src/bus/patterns.js#findNearestStop
+  // assumes every pattern has at least one such point and isn't defensive
+  // about an empty list, so every shape used by an active trip must get one.
+  const tripsByShapeId = new Map(); // shape_id → [trip_id, ...]
+  for (const [tripId, meta] of tripMeta) {
+    if (!meta.shapeId) continue;
+    if (!tripsByShapeId.has(meta.shapeId)) tripsByShapeId.set(meta.shapeId, []);
+    tripsByShapeId.get(meta.shapeId).push(tripId);
+  }
+
+  for (const [shapeId, points] of shapePoints) {
+    const ordered = [...points].sort((a, b) => a.seq - b.seq);
+    // Cumulative distance measured ourselves (haversine) rather than trusting
+    // shapes.txt's own shape_dist_traveled column — see shapeProjection.js.
+    const shapeWithDist = withCumulativeDistFt(ordered);
+
+    const candidateTrips = tripsByShapeId.get(shapeId) || [];
+    let bestStops = null;
+    for (const tripId of candidateTrips) {
+      const stops = busTripStops.get(tripId);
+      if (stops && (!bestStops || stops.length > bestStops.length)) bestStops = stops;
+    }
+    const stopPoints = [];
+    for (const s of bestStops || []) {
+      const stop = byStopId.get(s.stopId);
+      if (!stop) continue;
+      const lat = parseFloat(stop.stop_lat);
+      const lon = parseFloat(stop.stop_lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      const proj = projectOntoShape(lat, lon, shapeWithDist);
+      stopPoints.push({
+        lat,
+        lon,
+        distFt: proj ? proj.distFt : 0,
+        type: 'S',
+        stopId: s.stopId,
+        stopName: stop.stop_name || s.stopId,
+      });
+    }
+    if (stopPoints.length === 0) {
+      console.warn(
+        `  shape ${shapeId}: no stops resolved — bunching/gap "near stop" text will be unavailable`,
+      );
+    }
+
+    out.shapes[shapeId] = [...shapeWithDist, ...stopPoints].sort((a, b) => a.distFt - b.distFt);
+  }
+  console.log(`  ${out.shapes ? Object.keys(out.shapes).length : 0} shapes geometried`);
 
   Fs.ensureDirSync(Path.dirname(OUT_PATH));
   Fs.writeJsonSync(OUT_PATH, out);
   const bytes = Fs.statSync(OUT_PATH).size;
   const routeCount = Object.keys(out.routes).length;
-  const lineCount = Object.keys(out.lines).length;
+  const tripCount = Object.keys(out.trips).length;
+  const shapeCount = Object.keys(out.shapes).length;
   console.log(
-    `Wrote ${OUT_PATH} (${(bytes / 1024).toFixed(1)} KB, ${routeCount} bus routes, ${lineCount} rail lines)`,
+    `Wrote ${OUT_PATH} (${(bytes / 1024).toFixed(1)} KB, ${routeCount} routes, ${tripCount} trips, ${shapeCount} shapes)`,
   );
 }
 
@@ -549,6 +707,8 @@ module.exports = {
   BUS_DOMINANCE_THRESHOLD,
   resolveServiceDayTypes,
   dayTypeFor,
+  computeFallbackHeadway,
+  resolveHourlyHeadway,
 };
 
 if (require.main === module) {

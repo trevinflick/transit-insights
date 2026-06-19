@@ -3,7 +3,6 @@ const assert = require('node:assert/strict');
 const { detectBusGhosts, MIN_SNAPSHOTS } = require('../src/bus/ghosts');
 const { describeGhost } = require('../src/shared/ghostFormat');
 const { buildRollupPost } = require('../src/shared/post');
-const { detectTrainGhosts } = require('../src/train/ghosts');
 
 // Build a synthetic observation stream: `snapshots` polling timestamps, and at
 // each one, `vidsPerSnapshot` distinct vids sharing `pid`. Used to shape
@@ -132,6 +131,67 @@ test('merges observations from multiple pids when they resolve to the same direc
   assert.equal(events[0].expectedActive, 10);
 });
 
+test("resolveGroupDir: without it, patterns with different cardinal labels stay split (today's default)", async () => {
+  const rows = [
+    ...buildObs({ pid: 'p-east', snapshots: 12, vidsPerSnapshot: 2 }),
+    ...buildObs({ pid: 'p-south', snapshots: 12, vidsPerSnapshot: 2 }).map((r, i) => ({
+      ...r,
+      vehicle_id: `s${i % 2}`,
+    })),
+  ];
+  const patterns = {
+    'p-east': { pid: 'p-east', direction: 'Eastbound', route: '2' },
+    'p-south': { pid: 'p-south', direction: 'Southbound', route: '2' },
+  };
+  const events = await detectBusGhosts({
+    routes: ['2'],
+    getObservations: () => rows,
+    getPattern: async (pid) => patterns[pid],
+    expectedHeadway: () => 10,
+    expectedDuration: () => 60,
+    expectedActive: () => 8,
+  });
+  // Two separate groups, each compared against the full expectedActive=8 —
+  // each individually reads as "2 of 8 missing" even though combined
+  // they'd be 4 of 8. This is the bug being fixed; locking in the default
+  // (no resolveGroupDir passed) keeps existing callers' behavior unchanged.
+  assert.equal(events.length, 2);
+});
+
+test('resolveGroupDir: merges patterns with different cardinal labels into one bucket when they resolve to the same key', async () => {
+  // Mirrors the real Route 2 bug: "TO REYNOLDSBURG" (122.6°, Eastbound) and
+  // "TO HAMILTON ROAD" (135.5°, Southbound) are 13° apart but straddle a
+  // cardinal-bucket boundary. A resolveGroupDir mock standing in for
+  // resolveDirection (which would correctly resolve both to GTFS dir '0')
+  // should merge them into a single expectedActive comparison.
+  const rows = [
+    ...buildObs({ pid: 'p-east', snapshots: 12, vidsPerSnapshot: 2 }),
+    ...buildObs({ pid: 'p-south', snapshots: 12, vidsPerSnapshot: 2 }).map((r, i) => ({
+      ...r,
+      vehicle_id: `s${i % 2}`,
+    })),
+  ];
+  const patterns = {
+    'p-east': { pid: 'p-east', direction: 'Eastbound', route: '2' },
+    'p-south': { pid: 'p-south', direction: 'Southbound', route: '2' },
+  };
+  const events = await detectBusGhosts({
+    routes: ['2'],
+    getObservations: () => rows,
+    getPattern: async (pid) => patterns[pid],
+    expectedHeadway: () => 10,
+    expectedDuration: () => 60,
+    expectedActive: () => 8,
+    resolveGroupDir: () => '0',
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].observedActive, 4);
+  assert.equal(events[0].expectedActive, 8);
+  // Both patterns contributed equally (2 vids x 12 snapshots each) — display
+  // label just needs to be one of the two contributing labels, not crash.
+  assert.ok(['Eastbound', 'Southbound'].includes(events[0].direction));
+});
+
 test('skips when expected active count is below 2 (too sparse to be newsworthy)', async () => {
   const obs = buildObs({ pid: 'p1', snapshots: 12, vidsPerSnapshot: 0 });
   const events = await detectBusGhosts({
@@ -186,135 +246,6 @@ test('buildRollupPost uses singular "route" when exactly 1 is dropped', () => {
   const text = buildRollupPost('H', lines, 120);
   assert.ok(text.endsWith('…and 1 more route'), `got: ${text}`);
   assert.ok(!text.endsWith('routes'));
-});
-
-// Synthetic train observations: N snapshots, with a configurable number of
-// distinct vehicles on each of two Train Tracker directions (trDr=1, trDr=5).
-function buildTrainObs({
-  snapshots,
-  vidsTrDr1,
-  vidsTrDr5,
-  destination = 'Loop',
-  startTs = 1_700_000_000_000,
-  intervalMs = 5 * 60 * 1000,
-}) {
-  const rows = [];
-  for (let i = 0; i < snapshots; i++) {
-    const ts = startTs + i * intervalMs;
-    for (let v = 0; v < vidsTrDr1; v++)
-      rows.push({ ts, direction: '1', vehicle_id: `a${v}`, destination });
-    for (let v = 0; v < vidsTrDr5; v++)
-      rows.push({ ts, direction: '5', vehicle_id: `b${v}`, destination: '54th/Cermak' });
-  }
-  return rows;
-}
-
-test('loop lines aggregate across trDrs instead of splitting', async () => {
-  // Expected line-wide: 62 / 10 = 6.2 trains active on the entire Pink Line.
-  // Observed: 2 trDr=1 + 1 trDr=5 = 3 distinct vehicles per snapshot.
-  // Missing: 3.2 — passes the 3.0 abs threshold and >50% pct threshold.
-  // Without the loop-aware path, grouping by trDr would compare 2 vs 6.2 and 1
-  // vs 6.2 separately, wildly overstating missing.
-  const obs = buildTrainObs({ snapshots: 12, vidsTrDr1: 2, vidsTrDr5: 1 });
-  const events = await detectTrainGhosts({
-    lines: ['pink'],
-    getObservations: () => obs,
-    findStation: () => null,
-    expectedHeadway: () => 10,
-    expectedDuration: () => 62,
-    expectedActive: () => 6.2,
-    isLoopLine: () => true,
-  });
-  assert.equal(events.length, 1);
-  assert.equal(events[0].line, 'pink');
-  assert.equal(events[0].trDr, null);
-  assert.equal(events[0].destination, null);
-  assert.equal(events[0].observedActive, 3);
-  assert.ok(Math.abs(events[0].expectedActive - 6.2) < 1e-9);
-});
-
-test('loop lines suppress false positives that per-trDr grouping would fire', async () => {
-  // Pink Loop at healthy service: ~6 trains line-wide, split 3 trDr=1 + 3 trDr=5.
-  // Line-wide observed=6 matches expected=6.2 — no ghost.
-  // Under the old per-trDr logic, this would fire two ghost events (3 vs 6.2 each).
-  const obs = buildTrainObs({ snapshots: 12, vidsTrDr1: 3, vidsTrDr5: 3 });
-  const events = await detectTrainGhosts({
-    lines: ['pink'],
-    getObservations: () => obs,
-    findStation: () => null,
-    expectedHeadway: () => 10,
-    expectedDuration: () => 62,
-    expectedActive: () => 6.2,
-    isLoopLine: () => true,
-  });
-  assert.equal(events.length, 0);
-});
-
-test('bi-directional lines still split by trDr', async () => {
-  // Blue Line Forest Park: expected 14, observed 9 → missing 5 on just the
-  // trDr=5 side. isLoopLine returns false, so the existing per-trDr grouping
-  // runs and fires a ghost for one direction while the other passes.
-  const obs = buildTrainObs({
-    snapshots: 12,
-    vidsTrDr1: 14,
-    vidsTrDr5: 9,
-    destination: 'Forest Park',
-  });
-  const events = await detectTrainGhosts({
-    lines: ['blue'],
-    getObservations: () => obs,
-    findStation: () => ({ lat: 41.87, lon: -87.81, isTerminal: true }),
-    expectedHeadway: () => 6,
-    expectedDuration: () => 84,
-    expectedActive: () => 14,
-    isLoopLine: () => false,
-  });
-  assert.equal(events.length, 1);
-  assert.equal(events[0].trDr, '5');
-  assert.equal(events[0].observedActive, 9);
-  assert.equal(events[0].expectedActive, 14);
-});
-
-test('bi-directional line: skips direction whose destinations are all short-turns', async () => {
-  const obs = buildTrainObs({
-    snapshots: 12,
-    vidsTrDr1: 14,
-    vidsTrDr5: 9,
-    destination: 'UIC-Halsted',
-  });
-  const events = await detectTrainGhosts({
-    lines: ['blue'],
-    getObservations: () => obs,
-    findStation: () => ({ lat: 41.87, lon: -87.65, isTerminal: false }),
-    expectedHeadway: () => 6,
-    expectedDuration: () => 84,
-    expectedActive: () => 14,
-    isLoopLine: () => false,
-  });
-  assert.equal(events.length, 0);
-});
-
-test('bi-directional line: prefers a terminal destination when mixed with short-turns', async () => {
-  const obs = buildTrainObs({ snapshots: 12, vidsTrDr1: 14, vidsTrDr5: 9, destination: null });
-  // Half the observations say UIC-Halsted (short-turn), half Forest Park (terminal).
-  for (let i = 0; i < obs.length; i++) {
-    obs[i].destination = i % 2 === 0 ? 'UIC-Halsted' : 'Forest Park';
-  }
-  const findStation = (_line, dest) => {
-    if (dest === 'Forest Park') return { lat: 41.87, lon: -87.81, isTerminal: true };
-    return { lat: 41.87, lon: -87.65, isTerminal: false };
-  };
-  const events = await detectTrainGhosts({
-    lines: ['blue'],
-    getObservations: () => obs,
-    findStation,
-    expectedHeadway: () => 6,
-    expectedDuration: () => 84,
-    expectedActive: () => 14,
-    isLoopLine: () => false,
-  });
-  assert.equal(events.length, 1);
-  assert.equal(events[0].destination, 'Forest Park');
 });
 
 test('skips a route entirely when any observed pid fails pattern resolution', async () => {
@@ -377,33 +308,6 @@ test('bus formatLine: ratio <= 3 keeps effective-headway estimate', () => {
     headway: 10,
   });
   assert.match(out, /every ~17 min instead of ~10$/);
-});
-
-test('train formatLine: ratio > 3 drops effective-headway estimate', () => {
-  const { formatLine } = require('../bin/train/ghosts');
-  const out = formatLine({
-    line: 'red',
-    destination: 'Howard',
-    missing: 10,
-    expectedActive: 12,
-    observedActive: 1,
-    headway: 8,
-  });
-  assert.match(out, /scheduled every ~8 min$/);
-  assert.doesNotMatch(out, /instead of/);
-});
-
-test('train formatLine: ratio <= 3 keeps effective-headway estimate', () => {
-  const { formatLine } = require('../bin/train/ghosts');
-  const out = formatLine({
-    line: 'red',
-    destination: 'Howard',
-    missing: 4,
-    expectedActive: 12,
-    observedActive: 8,
-    headway: 8,
-  });
-  assert.match(out, /every ~12 min instead of ~8$/);
 });
 
 test('sanity gate: MIN_OBSERVED blocks events when observed drops below 2', async () => {
@@ -539,30 +443,6 @@ test('ramp-up gate: fires on mid-window outage even if tail partially recovers (
     expectedActive: () => 12,
   });
   assert.equal(events.length, 1);
-});
-
-test('ramp-up gate applies to trains too (loop line)', async () => {
-  // Brown line loop — expected 9 (duration 45 / headway 5). Counts ramp 1 → 8.
-  // Tail median 8 ≥ 0.8 × 9 = 7.2 → suppressed.
-  const rows = [];
-  const ts0 = 1_700_000_000_000;
-  const counts = [1, 2, 3, 4, 5, 6, 7, 7, 8, 8, 8, 8];
-  for (let i = 0; i < counts.length; i++) {
-    const ts = ts0 + i * 5 * 60 * 1000;
-    for (let v = 0; v < counts[i]; v++) {
-      rows.push({ ts, direction: null, vehicle_id: `v${v}`, destination: null });
-    }
-  }
-  const events = await detectTrainGhosts({
-    lines: ['Brn'],
-    getObservations: () => rows,
-    findStation: () => ({ lat: 0, lon: 0, name: 'Kimball', isTerminal: true }),
-    expectedHeadway: () => 5,
-    expectedDuration: () => 45,
-    expectedActive: () => 9,
-    isLoopLine: () => true,
-  });
-  assert.equal(events.length, 0);
 });
 
 // --- describeGhost: counts + headway derived from one set of rounded integers ---

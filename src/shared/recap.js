@@ -6,7 +6,6 @@
 const Path = require('node:path');
 const Fs = require('fs-extra');
 const { getDb } = require('./history');
-const trainStations = require('../train/data/trainStations.json');
 
 const PATTERNS_DIR = Path.join(__dirname, '..', '..', 'data', 'patterns');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -41,27 +40,6 @@ function resolveBusStopAnywhere(stopName) {
     if (!pattern) continue;
     const stop = pattern.points.find((p) => p.type === 'S' && p.stopName === stopName);
     if (stop) return { lat: stop.lat, lon: stop.lon };
-  }
-  return null;
-}
-
-function resolveTrainStation({ route, near_stop }) {
-  if (!near_stop) return null;
-  const norm = near_stop.toLowerCase();
-  // Prefer stations on the event's line, then fall back to any station.
-  const onLine = trainStations.filter((s) => !route || s.lines?.includes(route));
-  const pools = [onLine, trainStations];
-  for (const pool of pools) {
-    for (const s of pool) {
-      if (s.name.toLowerCase() === norm) return { lat: s.lat, lon: s.lon, name: s.name };
-    }
-    // startsWith handles "95th" ↔ "95th/Dan Ryan" variance.
-    for (const s of pool) {
-      const base = s.name.toLowerCase().split(' (')[0];
-      if (base === norm || base.startsWith(norm) || norm.startsWith(base)) {
-        return { lat: s.lat, lon: s.lon, name: s.name };
-      }
-    }
   }
   return null;
 }
@@ -113,11 +91,6 @@ function loadBusHeatmap(since, until) {
   return bucket(events, (ev) => resolveBusStop(ev) || resolveBusStopAnywhere(ev.near_stop));
 }
 
-function loadTrainHeatmap(since, until) {
-  const events = loadEvents('train', since, until);
-  return bucket(events, resolveTrainStation);
-}
-
 function loadGapLeaderboard(kind, since, until) {
   const db = getDb();
   const rows = db
@@ -131,13 +104,13 @@ function loadGapLeaderboard(kind, since, until) {
   return rows.map((r) => ({ route: r.route, count: r.count }));
 }
 
-// Probe both CT offsets (CST=-6, CDT=-5) and pick the one that round-trips
+// Probe both ET offsets (EST=-5, EDT=-4) and pick the one that round-trips
 // to the desired wall time — avoids pulling in a tz library.
 function ctWallTimeAsUtcMs(year, month, day, hour) {
-  for (const offsetHours of [5, 6]) {
+  for (const offsetHours of [4, 5]) {
     const candidate = Date.UTC(year, month - 1, day, offsetHours, 0, 0);
     const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/Chicago',
+      timeZone: 'America/New_York',
       hour12: false,
       year: 'numeric',
       month: '2-digit',
@@ -154,12 +127,12 @@ function ctWallTimeAsUtcMs(year, month, day, hour) {
       return candidate;
     }
   }
-  throw new Error(`No UTC offset lands ${year}-${month}-${day} ${hour}:00 in America/Chicago`);
+  throw new Error(`No UTC offset lands ${year}-${month}-${day} ${hour}:00 in America/New_York`);
 }
 
 function ctDateParts(ms) {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
+    timeZone: 'America/New_York',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -224,11 +197,9 @@ function formatRangeLabel(start, end) {
 
 module.exports = {
   loadBusHeatmap,
-  loadTrainHeatmap,
   loadGapLeaderboard,
   rangeForWindow,
   // exported for tests
   bucket,
-  resolveTrainStation,
   formatRangeLabel,
 };

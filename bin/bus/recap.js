@@ -5,6 +5,7 @@ const argv = require('minimist')(process.argv.slice(2));
 
 const { loadBusHeatmap, loadGapLeaderboard, rangeForWindow } = require('../../src/shared/recap');
 const { renderHeatmap, renderGapChart } = require('../../src/map');
+const { routeShortName, routeLabel } = require('../../src/bus/routes');
 const { loginBus, postWithImage } = require('../../src/bus/bluesky');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
 const {
@@ -30,10 +31,10 @@ function formatBusRoutes(routes) {
     return a.localeCompare(b);
   });
   const prefix = sorted.length === 1 ? 'Route' : 'Routes';
-  return `${prefix} ${sorted.join(', ')}`;
+  return `${prefix} ${sorted.map((r) => routeShortName(r)).join(', ')}`;
 }
 
-const formatBusRoute = (r) => `Route ${r}`;
+const formatBusRoute = (r) => routeLabel(r);
 
 async function main() {
   setup();
@@ -65,7 +66,7 @@ async function main() {
   }
 
   const plotted = [...points].sort((a, b) => b.count - a.count).slice(0, RENDER_CAP);
-  const image = await renderHeatmap({ points: plotted, kind: 'bus' });
+  const image = await renderHeatmap({ points: plotted });
   const text = buildPostText({ mode: 'bus', window, windowLabel, points, totalIncidents });
   const alt = buildAltText({ mode: 'bus', window, windowLabel, points, totalIncidents });
 

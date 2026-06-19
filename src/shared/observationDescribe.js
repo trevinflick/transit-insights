@@ -9,6 +9,8 @@
 // pass a row shaped like a disruption/roundup observation (kind, line,
 // detection_source, signals).
 
+const { routeLabel } = require('../bus/routes');
+
 const TRAIN_LINES = {
   red: 'Red',
   blue: 'Blue',
@@ -71,7 +73,7 @@ function botObservationSubject(incident) {
   if (incident.kind === 'bus') {
     const route = incident.line;
     if (!route) return null;
-    return `Route ${route} service`;
+    return `${routeLabel(route)} service`;
   }
   const lineKey = normalizeTrainLine(incident.line);
   const label = TRAIN_LINES[lineKey];
