@@ -5,9 +5,11 @@ FROM node:22-bookworm-slim
 
 # cron drives the schedule; curl is used by bin/cron-run.sh for healthchecks.io
 # pings; sqlite3 is the CLI used by scripts/backup-db.sh (kept for parity even
-# though off-box backups aren't wired up yet — see docs/BACKUPS.md).
+# though off-box backups aren't wired up yet — see docs/BACKUPS.md); unzip is
+# shelled out to by scripts/fetch-gtfs.js to read COTA's GTFS zip (present on
+# macOS by default, so this was invisible until building for Linux).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cron curl sqlite3 \
+    cron curl sqlite3 unzip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
