@@ -1,0 +1,17 @@
+services:
+  transit-insights:
+    build: .
+    container_name: transit-insights
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # state/history.sqlite (cooldowns, 90-day history) and the GTFS
+      # cache/pattern files — gitignored, bind-mounted so they survive
+      # image rebuilds.
+      - ./state:/app/state
+      - ./data:/app/data
+      # cron/healthchecks.env (gitignored secret) + the *-cron.log files
+      # bin/cron-run.sh appends to — bind-mounted so logs are inspectable
+      # from the host and the ping key survives rebuilds.
+      - ./cron:/app/cron

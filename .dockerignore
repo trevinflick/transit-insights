@@ -1,0 +1,12 @@
+node_modules
+.git
+.env
+.env.example
+cron/healthchecks.env
+state
+data
+cron/*.log
+*.log
+.DS_Store
+.claude
+tmp
