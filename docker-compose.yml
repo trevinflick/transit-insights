@@ -6,6 +6,14 @@ services:
     env_file:
       - .env
     volumes:
+      # src/shared/env.js loads secrets via dotenv reading an actual .env
+      # FILE from disk (path resolved relative to its own __dirname), not
+      # from process.env — env_file above only sets process.env for this
+      # container's PID 1 (the cron daemon), which doesn't help anyway since
+      # cron does not pass its own environment down to the jobs it spawns.
+      # Bind-mounting the real file is what makes credentials/tokens visible
+      # to every cron-spawned job, exactly like the bare-metal deployment.
+      - ./.env:/app/.env:ro
       # state/history.sqlite (cooldowns, 90-day history) and the GTFS
       # cache/pattern files — gitignored, bind-mounted so they survive
       # image rebuilds.
