@@ -19,7 +19,7 @@ const {
 } = require('../../src/bus/speedmap');
 const { loadPattern } = require('../../src/bus/patterns');
 const { renderSpeedmap } = require('../../src/map');
-const { loginBus, postWithImage } = require('../../src/bus/bluesky');
+const { loginBus, postWithImage, postText } = require('../../src/bus/bluesky');
 const history = require('../../src/shared/history');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
 const { formatTimeCT } = require('../../src/shared/format');
@@ -177,21 +177,29 @@ async function main() {
   });
   if (callouts.length > 0) console.log(`Callouts: ${callouts.join(' · ')}`);
 
-  const image = await renderSpeedmap(pattern, binSpeeds);
+  let image;
+  try {
+    image = await renderSpeedmap(pattern, binSpeeds);
+  } catch (e) {
+    console.warn(`Map render failed (${e.message}); will post text-only`);
+    image = null;
+  }
   const text = buildPostText(route, pattern, summary, startTime, endTime, callouts);
   const alt = buildAltText(route, pattern, summary);
 
   if (argv['dry-run']) {
-    const outPath = writeDryRunAsset(
-      image,
-      `speedmap-${route}-${pattern.direction.toLowerCase()}-${targetPid}-${Date.now()}.jpg`,
-    );
+    const outPath = image
+      ? writeDryRunAsset(
+          image,
+          `speedmap-${route}-${pattern.direction.toLowerCase()}-${targetPid}-${Date.now()}.jpg`,
+        )
+      : '(render failed — text only)';
     console.log(`\n--- DRY RUN ---\n${text}\n\nAlt: ${alt}\nImage: ${outPath}`);
     return;
   }
 
   const agent = await loginBus();
-  const result = await postWithImage(agent, text, image, alt);
+  const result = image ? await postWithImage(agent, text, image, alt) : await postText(agent, text);
   const totalValid = summary.red + summary.orange + summary.yellow + summary.green;
   history.recordSpeedmap({
     kind: 'bus',
