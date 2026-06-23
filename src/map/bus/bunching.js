@@ -30,6 +30,7 @@ const {
   fetchMapboxStatic,
   separateMarkers,
   perpendicularFromBearing,
+  thinPolylinePoints,
 } = require('../common');
 const { isArticulated } = require('../../bus/fleet');
 
@@ -95,7 +96,9 @@ function applyGapDashToView(view, pattern, lo, hi) {
   const solid = [];
   for (const slice of [before, after]) {
     if (slice.length < 2) continue;
-    const poly = encodeURIComponent(encode(slice.map((p) => [p.lat, p.lon])));
+    const poly = encodeURIComponent(
+      encode(thinPolylinePoints(slice, 150).map((p) => [p.lat, p.lon])),
+    );
     solid.push(
       `path-${ROUTE_HALO_STROKE}+${ROUTE_HALO_COLOR}(${poly})`,
       `path-${ROUTE_CORE_STROKE}+${ROUTE_CORE_COLOR}(${poly})`,
@@ -114,7 +117,10 @@ function applyGapDashToView(view, pattern, lo, hi) {
  */
 function computeBunchingView(bunch, pattern, extraVehicles = []) {
   const slice = slicePatternAroundBunch(pattern, bunch);
-  const polyline = encode(pattern.points.map((p) => [p.lat, p.lon]));
+  // Encode the bounded context slice, not the full route — pattern.points can
+  // run to 1000+ vertices on a long route (e.g. 102), which blew the Mapbox
+  // static URL past its length limit (HTTP 414) when used directly here.
+  const polyline = encode(thinPolylinePoints(slice, 150).map((p) => [p.lat, p.lon]));
   const encoded = encodeURIComponent(polyline);
   const overlays = [
     `path-${ROUTE_HALO_STROKE}+${ROUTE_HALO_COLOR}(${encoded})`,

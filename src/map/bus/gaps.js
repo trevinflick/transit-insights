@@ -23,6 +23,7 @@ const {
   perpendicularFromBearing,
   requireMapboxToken,
   fetchMapboxStatic,
+  thinPolylinePoints,
 } = require('../common');
 const { isArticulated } = require('../../bus/fleet');
 
@@ -77,7 +78,12 @@ function computeGapView(gap, pattern) {
   const overlays = [];
   for (const slice of [before, after]) {
     if (slice.length < 2) continue;
-    const poly = encodeURIComponent(encode(slice.map((p) => [p.lat, p.lon])));
+    // `before`/`after` run to either pattern endpoint, not just to the gap
+    // edge — on a long route this can still be most of the geometry, so cap
+    // it the same way bunching.js does (see its computeBunchingView comment).
+    const poly = encodeURIComponent(
+      encode(thinPolylinePoints(slice, 150).map((p) => [p.lat, p.lon])),
+    );
     overlays.push(
       `path-${ROUTE_HALO_STROKE}+${ROUTE_HALO_COLOR}(${poly})`,
       `path-${ROUTE_CORE_STROKE}+${ROUTE_CORE_COLOR}(${poly})`,
