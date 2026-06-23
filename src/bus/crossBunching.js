@@ -3,7 +3,9 @@
 // bunching.js can't see this: each route's pdist is a separate coordinate
 // system, so it never compares a #22 against a #36. Here we cluster purely on
 // geography (lat/lon) across ALL routes, then require the cluster to span 2+
-// routes and show congestion.
+// routes and show congestion. As of ALLOWED_ROUTE_SETS below, a cluster also
+// has to match a known-good route combination to actually post — see that
+// constant for why.
 const { clusterByProximity, clusterStats } = require('../shared/geoClusters');
 const { haversineFt } = require('../shared/geo');
 
@@ -28,6 +30,25 @@ const PULSE_HUBS = [
 function isAtPulseHub(centroid, hubs = PULSE_HUBS) {
   return hubs.some((h) => haversineFt(centroid, h) <= h.radiusFt);
 }
+
+// Geofencing known hubs doesn't scale — every false positive so far has been
+// a hub we hadn't found yet (downtown pulse point, then a second cluster
+// involving routes 2/12/25 near 1333 Fields Ave that's neither a hub nor a
+// real incident). Flip the default: cross-route bunching only fires for
+// route combinations confirmed to share enough physical corridor that real
+// bunching between just those routes is a meaningful signal, not a
+// coincidental crossing. Routes 2 and 102 both run N High St for most of
+// their length. Add a combination here only after confirming real, recurring
+// physical overlap — not just an observed pileup.
+const ALLOWED_ROUTE_SETS = [['002', '102']];
+
+// True when a cluster's route set is EXACTLY one of the allowed combinations
+// (not a superset/subset — a 3rd route along for the ride means it's not the
+// known-good overlap, so it's suppressed like everything else).
+function isAllowedRouteCombo(routes, allowed = ALLOWED_ROUTE_SETS) {
+  return allowed.some((set) => set.length === routes.size && set.every((r) => routes.has(r)));
+}
+
 // Layover zone — a bus sitting at the start/end of its pattern is between trips,
 // not pinned in street traffic. Several routes lay over together at the same
 // transit center (e.g. Midway, where 47/55/63 all terminate), which otherwise
@@ -50,7 +71,9 @@ function isAtTerminal(pdistFt, lengthFt, marginFt = LAYOVER_TERMINAL_FT) {
 // congestion gate. Omit it to detect on geometry alone (tests / diagnostics).
 // `layoverIds` is a Set of vids the caller classified as laying over (parked at
 // a pattern terminal); they're dropped before clustering so a knot of routes
-// resting at a transit center doesn't read as a street pileup.
+// resting at a transit center doesn't read as a street pileup. `allowedRouteSets`
+// defaults to ALLOWED_ROUTE_SETS (production policy) — pass null to disable the
+// route-combo gate entirely when testing the clustering mechanism in isolation.
 // Returns clusters best-first: most vehicles, tie-break tightest span.
 function detectCrossRouteBunches(
   vehicles,
@@ -62,6 +85,7 @@ function detectCrossRouteBunches(
     minVehicles = MIN_VEHICLES,
     minRoutes = MIN_ROUTES,
     minStopped = MIN_STOPPED,
+    allowedRouteSets = ALLOWED_ROUTE_SETS,
   } = {},
 ) {
   const nowMs = now instanceof Date ? now.getTime() : now;
@@ -82,6 +106,7 @@ function detectCrossRouteBunches(
     const { spanFt, routes, centroid } = clusterStats(members, { routeKey: (v) => v.route });
     if (routes.size < minRoutes) continue;
     if (isAtPulseHub(centroid)) continue;
+    if (allowedRouteSets && !isAllowedRouteCombo(routes, allowedRouteSets)) continue;
     if (stoppedIds) {
       const stopped = members.filter((v) => stoppedIds.has(v.vid)).length;
       if (stopped < minStopped) continue;
@@ -140,10 +165,12 @@ module.exports = {
   groupByRoute,
   isAtTerminal,
   isAtPulseHub,
+  isAllowedRouteCombo,
   CROSS_RADIUS_FT,
   MIN_VEHICLES,
   MIN_ROUTES,
   MIN_STOPPED,
   LAYOVER_TERMINAL_FT,
   PULSE_HUBS,
+  ALLOWED_ROUTE_SETS,
 };

@@ -10,9 +10,14 @@ FROM node:22-bookworm-slim
 # scripts/backup-db.sh (kept for parity even though off-box backups aren't
 # wired up yet — see docs/BACKUPS.md); unzip is shelled out to by
 # scripts/fetch-gtfs.js to read COTA's GTFS zip (present on macOS by default,
-# so this was invisible until building for Linux).
+# so this was invisible until building for Linux); fontconfig + fonts-inter
+# (the family every SVG label in src/map/*.js asks for, falling back to
+# generic sans-serif) are needed because sharp's SVG compositing renders text
+# via the system font stack — with none installed, every label (legends,
+# bus-position numbers, callout text) silently drew blank instead of erroring,
+# which is why it looked fine in logs but wrong in the actual post images.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cron curl ca-certificates sqlite3 unzip \
+    cron curl ca-certificates sqlite3 unzip fontconfig fonts-inter fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
