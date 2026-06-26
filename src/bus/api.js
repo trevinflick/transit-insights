@@ -163,6 +163,13 @@ async function getPredictions({ vid }) {
   return predictionsFromFeed(feed, vid);
 }
 
+// Raw decoded ServiceAlerts feed — gating/normalization lives in
+// src/bus/alerts.js, this just owns the fetch/decode (same responsibility
+// split as VehiclePositions/TripUpdates above).
+async function getAlertsFeed() {
+  return fetchFeed('Alert/Alerts.pb');
+}
+
 // Returns `{ vehicles, now, source }`. COTA's GTFS-realtime feeds are public
 // and unauthenticated (no daily-request cap like CTA's BusTime, so the cache
 // here is about avoiding redundant decodes within a tick, not quota
@@ -183,7 +190,9 @@ module.exports = {
   getVehiclesCachedOrFresh,
   getPattern,
   getPredictions,
+  getAlertsFeed,
   parseVehicle,
+  longToNum,
   // Exposed for unit tests.
   cardinalBound,
   parseGtfsStartTime,
