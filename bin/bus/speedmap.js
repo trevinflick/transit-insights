@@ -22,7 +22,7 @@ const { renderSpeedmap } = require('../../src/map');
 const { loginBus, postWithImage, postText } = require('../../src/bus/bluesky');
 const history = require('../../src/shared/history');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
-const { formatTimeCT } = require('../../src/shared/format');
+const { formatTimeET } = require('../../src/shared/format');
 const { expectedBusRouteActiveTrips } = require('../../src/shared/gtfs');
 
 const NUM_BINS = 40;
@@ -39,7 +39,7 @@ function buildPostText(route, pattern, summary, startTime, endTime, callouts = [
   const title = routeTitle(route);
   const dir = pattern.direction;
   const avg = summary.avg == null ? 'unavailable' : `${summary.avg.toFixed(1)} mph`;
-  const window = `${formatTimeCT(startTime)}–${formatTimeCT(endTime)} CT`;
+  const window = `${formatTimeET(startTime)}–${formatTimeET(endTime)} ET`;
   const head = `🚦 ${title} — ${dir}\n${window} · average speed ${avg}`;
   const tail = history.formatCallouts(callouts);
   return (

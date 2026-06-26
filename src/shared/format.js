@@ -39,7 +39,7 @@ function formatDeviation(min) {
   return r > 0 ? `${r} min late` : `${-r} min early`;
 }
 
-function formatTimeCT(date) {
+function formatTimeET(date) {
   return date.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
@@ -55,5 +55,5 @@ module.exports = {
   elapsedMinutesLabel,
   formatDeviation,
   keycapNumber,
-  formatTimeCT,
+  formatTimeET,
 };
