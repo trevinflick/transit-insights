@@ -35,7 +35,12 @@ const {
 const { isArticulated } = require('../../bus/fleet');
 
 const BUS_COLOR = 'ff2a6d'; // hot pink/red reads well on dark
-const CONTEXT_PAD_FT = 1500; // feet of route context on each side of the bunch
+// Feet of route context on each side of the bunch. A bunch's two buses are
+// already close together, so this pad IS effectively the whole visible
+// span (unlike gaps.js's same-named constant, where the pad is additive on
+// top of a gap that's already wide) — 1500 ft read as "cut off" on a real
+// CMAX post.
+const CONTEXT_PAD_FT = 4000;
 const BUS_MARKER_RADIUS = 34;
 const TERMINAL_MARKER_RADIUS = BUS_MARKER_RADIUS;
 const STOP_MARKER_SIZE = 32;
