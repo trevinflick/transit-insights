@@ -31,6 +31,15 @@ R=/path/to/cota-insights/bin/cron-run.sh
 13-58/15 *  *  *  *  $R bus-thin-gaps    bin/bus/thin-gaps.js
 0       */2 *  *  *  $R bus-speedmap     bin/bus/speedmap.js
 7       *  *  *  *   $R bus-ghosts       bin/bus/ghosts.js
+# bus-fleet-rollup: network-wide degradation summary (many routes' gap/ghost/
+# thin-gap signals at once — e.g. a fleet-wide vehicle shortage). Cooldown-
+# throttled (4h) inside the script, not the cron cadence — runs every 15 min
+# on a :02 offset so it doesn't share a wall minute with any job above.
+2-59/15 *  *  *  *   $R bus-fleet-rollup bin/bus/fleet-rollup.js
+# bus-alerts: stop closures/reroutes/reduced-service, gated to short-term
+# disruptions (see src/bus/alerts.js). COTA's feed refreshes server-side
+# roughly every 30s, so polling faster than this gains nothing.
+4-59/15 *  *  *  *   $R bus-alerts       bin/bus/alerts.js
 # observe-buses runs every minute. COTA's GTFS-realtime feeds are unauthenticated
 # polled protobuf endpoints (no daily-request cap like CTA's BusTime), so cadence
 # here is about freshness, not quota. bunching/gaps/pulse all read the cache

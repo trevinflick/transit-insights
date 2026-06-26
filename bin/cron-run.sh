@@ -36,9 +36,9 @@ fi
 # truth for "what's watched" — edit it here and `git pull` on the server to
 # widen/narrow coverage. Jobs not listed simply don't ping. No-op entirely
 # unless cron/healthchecks.env exists (see the .example). Single-agency
-# bus-only roster (9 jobs) — comfortably under the 20-check free tier, so
+# bus-only roster (11 jobs) — comfortably under the 20-check free tier, so
 # everything except the low-stakes weekly/monthly recap is watched.
-HC_MONITORED="observe-buses bus-cross-bunching bus-bunching bus-gaps bus-thin-gaps bus-ghosts bus-speedmap fetch-gtfs audit-alerts"
+HC_MONITORED="observe-buses bus-cross-bunching bus-bunching bus-gaps bus-thin-gaps bus-ghosts bus-speedmap bus-fleet-rollup bus-alerts fetch-gtfs audit-alerts"
 [ -f cron/healthchecks.env ] && . cron/healthchecks.env
 case " $HC_MONITORED " in *" $NAME "*) hc_watched=1 ;; *) hc_watched= ;; esac
 
