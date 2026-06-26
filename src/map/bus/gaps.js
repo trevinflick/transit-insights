@@ -18,6 +18,7 @@ const {
   markerLabelChip,
   buildStopMarker,
   buildDashedGapSvg,
+  buildLabelLegend,
   xmlEscape,
   measureTextWidth,
   perpendicularFromBearing,
@@ -249,7 +250,17 @@ async function renderGapMap(gap, pattern, stop = null) {
   );
   const gapDash = buildDashedGapSvg(gapPixels, ROUTE_CORE_COLOR, { coreStroke: ROUTE_CORE_STROKE });
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">${gapDash}${terminalElements.join('\n')}${stopElements.join('\n')}${markerElements.join('\n')}${chipElements.join('\n')}${arrowElements.join('\n')}</svg>`;
+  // Explain the L/N chips on the image itself — the post text spells out
+  // "Last seen"/"Next up" in full, but a reader who only sees the image
+  // (e.g. a quote-post or screenshot) has no way to decode the bare letters.
+  // Bottom-left, mirroring crossBunching.js's legend convention — the
+  // direction arrow above already claims the top-right corner.
+  const legend = await buildLabelLegend(24, HEIGHT - 116, [
+    { label: 'L', text: 'Last seen' },
+    { label: 'N', text: 'Next up' },
+  ]);
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">${gapDash}${terminalElements.join('\n')}${stopElements.join('\n')}${markerElements.join('\n')}${chipElements.join('\n')}${arrowElements.join('\n')}${legend}</svg>`;
   return sharp(baseMap)
     .resize(WIDTH, HEIGHT)
     .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])

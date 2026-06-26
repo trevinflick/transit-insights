@@ -241,6 +241,41 @@ async function buildGhostLegend(x, y) {
   ].join('');
 }
 
+// In-frame legend explaining single-letter marker badges (e.g. gap maps'
+// "L"/"N" — Last seen / Next up — which otherwise have no on-image
+// explanation; the post text spells them out but a reader of the image
+// alone can't tell). One dark pill, one text row per item. Width is
+// measured via librsvg and cached per distinct text (small, fixed set of
+// labels in practice), same rationale as buildGhostLegend's cache.
+const cachedLabelLegendWidths = new Map();
+async function buildLabelLegend(x, y, items) {
+  const padX = 16;
+  const padY = 12;
+  const fontSize = 24;
+  const rowH = 34;
+
+  const texts = items.map(({ label, text }) => `${label} · ${text}`);
+  let maxTextWidth = 0;
+  for (const t of texts) {
+    if (!cachedLabelLegendWidths.has(t)) {
+      cachedLabelLegendWidths.set(t, await measureTextWidth(t, fontSize, { bold: true }));
+    }
+    maxTextWidth = Math.max(maxTextWidth, cachedLabelLegendWidths.get(t));
+  }
+
+  const boxW = padX * 2 + maxTextWidth;
+  const boxH = padY * 2 + texts.length * rowH;
+  const rows = texts.map((t, i) => {
+    const rowCy = y + padY + i * rowH + rowH / 2;
+    return `<text x="${x + padX}" y="${rowCy + fontSize * 0.35}" fill="#fff" font-family="Inter, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="600">${xmlEscape(t)}</text>`;
+  });
+
+  return [
+    `<rect x="${x}" y="${y}" width="${boxW}" height="${boxH}" rx="6" fill="#000" fill-opacity="0.7"/>`,
+    ...rows,
+  ].join('');
+}
+
 // Turnaround marker: rendered when a vehicle disappears from the API at a
 // real terminus (last-seen position within ~0.25 mi of a polyline endpoint
 // that isn't a Loop-trunk apex). Distinct from the gray "lost-signal" ghost
@@ -520,6 +555,7 @@ module.exports = {
   buildClipProgress,
   buildReadoutPill,
   buildGhostLegend,
+  buildLabelLegend,
   buildTerminalMarker,
   buildStopMarker,
   buildStopDot,
