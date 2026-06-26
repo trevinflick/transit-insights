@@ -47,6 +47,53 @@ test('normalizeAlert: protobuf-shaped entity (Long fields, translation arrays) n
   assert.deepEqual(alert.routeIds, ['007']); // deduped across repeated stop-scoped entries
   assert.equal(alert.headerText, 'Cancelled stops on Route 007 NORTHEAST, SOUTHWEST.');
   assert.match(alert.descriptionText, /Block 0707/);
+  assert.deepEqual(alert.cancelledTrips, []); // no .trip on any informedEntity row here
+});
+
+// Real shape: a single "cancelled stops" alert had 415 informedEntity rows
+// (one per stop the cancelled trip would have served) across just 5 actual
+// trips. normalizeAlert must dedupe down to the 5 trips, not 415/204.
+test("normalizeAlert: dedupes a whole-block cancellation's many stop-scoped rows down to its actual distinct trips", () => {
+  const trips = [
+    { tripId: '1051675', startTime: '05:57:00' },
+    { tripId: '1051751', startTime: '07:49:00' },
+    { tripId: '1051682', startTime: '09:25:00' },
+    { tripId: '1051758', startTime: '11:18:00' },
+    { tripId: '1051724', startTime: '13:03:00' },
+  ];
+  const informedEntity = [];
+  for (const t of trips) {
+    for (let i = 0; i < 80; i++) {
+      informedEntity.push({
+        routeId: '008',
+        stopId: `STOP${i}`,
+        trip: {
+          tripId: t.tripId,
+          startTime: t.startTime,
+          startDate: '20260626',
+          scheduleRelationship: 'CANCELED',
+        },
+      });
+    }
+  }
+  const entity = {
+    id: '45270',
+    alert: {
+      effect: 2,
+      informedEntity,
+      headerText: {
+        translation: [{ text: 'Cancelled stops on Route 008 NORTH, SOUTH.', language: 'en' }],
+      },
+      descriptionText: { translation: [{ text: 'irrelevant for this test', language: 'en' }] },
+    },
+  };
+  const alert = normalizeAlert(entity);
+  assert.equal(alert.cancelledTrips.length, 5);
+  // Sorted by startTime ascending.
+  assert.deepEqual(
+    alert.cancelledTrips.map((t) => t.startTime),
+    ['05:57:00', '07:49:00', '09:25:00', '11:18:00', '13:03:00'],
+  );
 });
 
 test('isAdmittedAlert: real short-term REDUCED_SERVICE example (id 45287, ~6h window) is admitted', () => {

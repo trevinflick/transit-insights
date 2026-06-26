@@ -2,18 +2,19 @@
 // COTA service alerts: stop closures, reroutes, reduced service — gated to
 // short-term disruptions only (see src/bus/alerts.js for why and the real
 // feed data that calibrated the gate). One-shot: fetch → gate → post new
-// admitted alerts → sweep for resolutions. Text-only for v1 (no disruption
-// map — the old CTA pipeline's renderBusDisruption was CTA-specific).
+// admitted alerts → sweep for resolutions.
 require('../../src/shared/env');
 
 const argv = require('minimist')(process.argv.slice(2));
 
 const { getAlertsFeed } = require('../../src/bus/api');
 const { normalizeAlert, isAdmittedAlert, isStillActive } = require('../../src/bus/alerts');
-const { buildAlertPostText } = require('../../src/bus/alertPost');
-const { loginBus, postText } = require('../../src/bus/bluesky');
+const { buildAlertPostText, buildAlertAltText } = require('../../src/bus/alertPost');
+const { getTripMeta, getShapePoints } = require('../../src/shared/gtfs');
+const { renderDisruptionMap } = require('../../src/map');
+const { loginBus, postText, postWithImage } = require('../../src/bus/bluesky');
 const history = require('../../src/shared/history');
-const { setup, runBin } = require('../../src/shared/runBin');
+const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
 
 // Distinct from the 'bus' kind used by gaps/ghosts/pulse so listUnresolvedAlerts
 // and route-LIKE queries against alert_posts can't cross-contaminate between
@@ -27,6 +28,34 @@ const KIND = 'bus-service-alert';
 // Anything past the cap is simply not recorded this run, so it's picked back
 // up and posted on a later tick (every 15 min) until the backlog clears.
 const MAX_NEW_POSTS_PER_RUN = 5;
+
+// Whole-trip cancellations can affect 200+ stops — too many to name — but
+// the affected ROUTE is easy to show. Resolves each cancelled trip's actual
+// shape (via the trip_id already carried on the alert, no guessing a
+// "representative" pattern) and dedupes by shape_id, since a block usually
+// repeats the same 1-2 shapes across all its trips for the day. Returns null
+// (caller falls back to text-only) when there's nothing to resolve or the
+// render itself fails.
+async function buildAlertImage(alert) {
+  if (!alert.cancelledTrips || alert.cancelledTrips.length === 0) return null;
+  const shapeIds = new Set();
+  for (const t of alert.cancelledTrips) {
+    const meta = getTripMeta(t.tripId);
+    if (meta?.shapeId) shapeIds.add(String(meta.shapeId));
+  }
+  const shapes = [...shapeIds]
+    .map((shapeId) => getShapePoints(shapeId))
+    .filter((points) => points && points.length >= 2)
+    .map((points) => ({ points }));
+  if (shapes.length === 0) return null;
+
+  try {
+    return await renderDisruptionMap(shapes);
+  } catch (e) {
+    console.warn(`Map render failed for alert ${alert.id} (${e.message}); will post text-only`);
+    return null;
+  }
+}
 
 async function main() {
   setup();
@@ -74,10 +103,16 @@ async function main() {
     }
 
     const text = buildAlertPostText(alert);
-    console.log(`New admitted alert ${alert.id} (routes: ${alert.routeIds.join(', ') || 'none'})`);
+    const image = await buildAlertImage(alert);
+    console.log(
+      `New admitted alert ${alert.id} (routes: ${alert.routeIds.join(', ') || 'none'}${image ? ', with map' : ''})`,
+    );
 
     if (argv['dry-run']) {
-      console.log(`\n--- DRY RUN alert ${alert.id} ---\n${text}`);
+      const outPath = image
+        ? writeDryRunAsset(image, `alert-${alert.id}-${Date.now()}.jpg`)
+        : '(no map — text-only)';
+      console.log(`\n--- DRY RUN alert ${alert.id} ---\n${text}\nImage: ${outPath}`);
       newPostCount += 1;
       continue;
     }
@@ -97,7 +132,9 @@ async function main() {
       now,
     );
     const agent = await getAgent();
-    const result = await postText(agent, text);
+    const result = image
+      ? await postWithImage(agent, text, image, buildAlertAltText(alert))
+      : await postText(agent, text);
     console.log(`Posted alert ${alert.id}: ${result.url}`);
     history.recordAlertSeen(
       {

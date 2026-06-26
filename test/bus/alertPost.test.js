@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildAlertPostText } = require('../../src/bus/alertPost');
+const { buildAlertPostText, buildAlertAltText } = require('../../src/bus/alertPost');
 const { graphemeLength, POST_MAX_CHARS } = require('../../src/shared/post');
 
 test("buildAlertPostText: tags the route and passes COTA's own text through", () => {
@@ -43,4 +43,51 @@ test('buildAlertPostText: stays under the post limit, truncating an oversized bo
   assert.ok(graphemeLength(text) <= POST_MAX_CHARS);
   assert.match(text, /…$/);
   assert.match(text, /^⚠ Route 23 \(James-Stelzer\) — service alert\n/);
+});
+
+// Whole-trip cancellations: real COTA descriptionText only gives a vague
+// "between A at 5:57 AM and B at 1:03 PM" window — riders care which actual
+// trips are gone, which the alert data has (cancelledTrips), so this
+// replaces the vague description with the precise list.
+test('buildAlertPostText: cancelledTrips replaces the vague description with an exact bus-time list', () => {
+  const alert = {
+    routeIds: ['008'],
+    headerText: 'Cancelled stops on Route 008 NORTH, SOUTH.',
+    descriptionText:
+      'Cancelled stops on Route 008 NORTH, SOUTH Block 0809 between A at 5:57 AM and B at 1:03 PM.',
+    cancelledTrips: [
+      { tripId: '1051675', startTime: '05:57:00' },
+      { tripId: '1051751', startTime: '07:49:00' },
+      { tripId: '1051682', startTime: '09:25:00' },
+      { tripId: '1051758', startTime: '11:18:00' },
+      { tripId: '1051724', startTime: '13:03:00' },
+    ],
+  };
+  const text = buildAlertPostText(alert);
+  assert.equal(
+    text,
+    '⚠ Route 8 (Karl/S High/Parsons) — service alert\n' +
+      'Cancelled stops on Route 008 NORTH, SOUTH.\n' +
+      '5 buses cancelled today: 5:57 AM, 7:49 AM, 9:25 AM, 11:18 AM, 1:03 PM',
+  );
+  assert.doesNotMatch(text, /between A at/); // the vague original description is gone
+});
+
+test('buildAlertPostText: a single cancelled bus uses singular "bus"', () => {
+  const alert = {
+    routeIds: ['008'],
+    headerText: null,
+    descriptionText: null,
+    cancelledTrips: [{ tripId: '1', startTime: '14:00:00' }],
+  };
+  const text = buildAlertPostText(alert);
+  assert.match(text, /1 bus cancelled today: 2:00 PM$/);
+});
+
+test('buildAlertAltText: names the affected routes', () => {
+  const alt = buildAlertAltText({ routeIds: ['008'] });
+  assert.equal(
+    alt,
+    "Map highlighting the Route 8 (Karl/S High/Parsons) route pattern(s) affected by today's service alert.",
+  );
 });

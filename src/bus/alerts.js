@@ -34,11 +34,30 @@ const MAX_DURATION_SEC = 7 * 24 * 60 * 60;
 // protobuf-specific types (Long, translation arrays, ...).
 function normalizeAlert(entity) {
   const a = entity.alert || {};
+  const informedEntity = a.informedEntity || [];
   const activePeriods = (a.activePeriod || []).map((p) => ({
     start: longToNum(p.start),
     end: longToNum(p.end),
   }));
-  const routeIds = [...new Set((a.informedEntity || []).map((ie) => ie.routeId).filter(Boolean))];
+  const routeIds = [...new Set(informedEntity.map((ie) => ie.routeId).filter(Boolean))];
+  // Whole-trip cancellations (effect=REDUCED_SERVICE, "Cancelled stops on
+  // Route N ...") carry a `trip` on every informedEntity row — one per stop
+  // the cancelled trip would have served, so the SAME tripId repeats
+  // hundreds of times (one real alert had 415 rows / 204 distinct stops
+  // across just 5 trips). Dedupe down to the actual distinct trips; that
+  // count is the useful rider-facing number, not the stop count.
+  const tripsById = new Map();
+  for (const ie of informedEntity) {
+    if (ie.trip?.tripId != null && !tripsById.has(ie.trip.tripId)) {
+      tripsById.set(ie.trip.tripId, {
+        tripId: String(ie.trip.tripId),
+        startTime: ie.trip.startTime || null,
+      });
+    }
+  }
+  const cancelledTrips = [...tripsById.values()].sort((x, y) =>
+    (x.startTime || '').localeCompare(y.startTime || ''),
+  );
   const firstText = (ts) => ts?.translation?.[0]?.text || null;
   return {
     id: String(entity.id),
@@ -46,6 +65,7 @@ function normalizeAlert(entity) {
     cause: a.cause,
     activePeriods,
     routeIds,
+    cancelledTrips,
     headerText: firstText(a.headerText),
     descriptionText: firstText(a.descriptionText),
   };

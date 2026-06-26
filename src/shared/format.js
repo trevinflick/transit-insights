@@ -48,6 +48,23 @@ function formatTimeET(date) {
   });
 }
 
+// GTFS trip start_time/stop_times.txt times are agency-local wall clock
+// already (COTA = Eastern) — no timezone math needed, unlike formatTimeET
+// above which converts a UTC instant. Just reformat "HH:MM:SS" (may exceed
+// 24h for an owl trip) to "5:57 AM" for display. Returns the input as-is if
+// it doesn't parse, rather than throwing on a malformed feed value.
+function formatGtfsTimeOfDay(hhmmss) {
+  const parts = String(hhmmss)
+    .split(':')
+    .map((x) => parseInt(x, 10));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return hhmmss;
+  const h = parts[0] % 24;
+  const m = parts[1];
+  const period = h < 12 ? 'AM' : 'PM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
 module.exports = {
   formatDistance,
   formatMinutes,
@@ -56,4 +73,5 @@ module.exports = {
   formatDeviation,
   keycapNumber,
   formatTimeET,
+  formatGtfsTimeOfDay,
 };
