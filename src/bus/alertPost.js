@@ -7,16 +7,29 @@
 // because CTA's alert text needed parsing; COTA's is already structured by
 // routeId/effect, so there's nothing to extract).
 //
-// Whole-trip/block cancellations are the one case worth a real rewrite:
-// COTA's own descriptionText says only a vague "between A at 5:57 AM and B
-// at 1:03 PM," when the alert data actually carries every cancelled trip's
-// start time — riders care which specific runs are gone, not a fuzzy
-// window. See alert.cancelledTrips (src/bus/alerts.js#normalizeAlert).
+// Whole-trip/block cancellations are the one case worth a real rewrite —
+// COTA's own headerText/descriptionText for these ("Cancelled stops on
+// Route 008 NORTH, SOUTH... between A at 5:57 AM and B at 1:03 PM") has
+// three problems: a zero-padded route number duplicating the tag line's
+// already-correct "Route 8", "NORTH, SOUTH" reading like two separate
+// routes rather than one route's two directions, and "Cancelled stops"
+// itself misleading readers into picturing specific stops removed rather
+// than entire scheduled buses never running. Dropped entirely in favor of
+// our own line built from the alert data directly — the tag line already
+// names the route, the map (when it renders) already shows which
+// direction(s) are affected, and the precise per-bus time list says more
+// than COTA's vague "between A and B" window ever did. See
+// alert.cancelledTrips (src/bus/alerts.js#normalizeAlert).
+//
 // Said as "buses cancelled," not "trips cancelled" — scheduleRelationship
 // CANCELED means the bus simply never runs (confirmed against the live feed:
 // every "cancelled stops" alert uses this, no other relationship value), and
 // "trip" is transit jargon that risks reading as a partial/detour skip
-// rather than a full no-show.
+// rather than a full no-show. Said as "cancelled today," not "upcoming
+// buses cancelled" — the listed times are a real mix of already-passed and
+// still-to-come (COTA pre-announces a block's whole remaining day at once),
+// so "upcoming" would be wrong for whichever ones already passed by the
+// time this posts; "today" makes no tense claim and is correct either way.
 const { routeTitle } = require('./routes');
 const { formatGtfsTimeOfDay } = require('../shared/format');
 const { graphemeLength, POST_MAX_CHARS } = require('../shared/post');
@@ -25,8 +38,7 @@ function buildAlertBody(alert) {
   if (alert.cancelledTrips && alert.cancelledTrips.length > 0) {
     const n = alert.cancelledTrips.length;
     const times = alert.cancelledTrips.map((t) => formatGtfsTimeOfDay(t.startTime)).join(', ');
-    const lead = alert.headerText ? `${alert.headerText}\n` : '';
-    return `${lead}${n} bus${n === 1 ? '' : 'es'} cancelled today: ${times}`;
+    return `${n} bus${n === 1 ? '' : 'es'} cancelled today: ${times}`;
   }
   return [alert.headerText, alert.descriptionText].filter(Boolean).join('\n');
 }

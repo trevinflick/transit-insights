@@ -1019,6 +1019,29 @@ function hasUnresolvedCtaAlert({ kind, ctaRouteCode }) {
   return !!row;
 }
 
+// Most recent POSTED alert_posts row for `route`, today (Eastern day
+// boundary) — used to thread a new same-day, same-route alert under an
+// earlier one instead of posting fresh at the top level. A single route can
+// have several independently-cancelled blocks fire their own alert_id over
+// one day; without this, each post reads like its own complete daily
+// summary rather than an update on the same ongoing day. Not restricted to
+// unresolved alerts — resolution here is silent (no "all clear" reply), so
+// there's no contradictory leaf at the bottom of the thread to land on
+// (contrast getRecentPulsePostsAll's comment above, where that WAS a risk).
+function findTodaysAlertPostForRoute({ kind, route }, now = Date.now()) {
+  const dayStart = chicagoStartOfDay(now);
+  return (
+    db()
+      .prepare(`
+    SELECT alert_id, post_uri, first_seen_ts FROM alert_posts
+    WHERE kind = ? AND post_uri IS NOT NULL AND first_seen_ts >= ?
+      AND (',' || COALESCE(routes, '') || ',') LIKE ?
+    ORDER BY first_seen_ts DESC LIMIT 1
+  `)
+      .get(kind, dayStart, `%,${route},%`) || null
+  );
+}
+
 // Exact-pulse idempotency: did we already post an observed-clear after the
 // posted observed event with this URI? Replaces `hasObservedClearSince`'s
 // time-windowed approximation. Match on line/direction/from/to in addition
@@ -1951,6 +1974,7 @@ module.exports = {
   getRecentPulsePostsAll,
   hasObservedClearForPulse,
   hasUnresolvedCtaAlert,
+  findTodaysAlertPostForRoute,
   getPulseState,
   upsertPulseState,
   clearPulseState,

@@ -45,11 +45,13 @@ test('buildAlertPostText: stays under the post limit, truncating an oversized bo
   assert.match(text, /^⚠ Route 23 \(James-Stelzer\) — service alert\n/);
 });
 
-// Whole-trip cancellations: real COTA descriptionText only gives a vague
-// "between A at 5:57 AM and B at 1:03 PM" window — riders care which actual
-// trips are gone, which the alert data has (cancelledTrips), so this
-// replaces the vague description with the precise list.
-test('buildAlertPostText: cancelledTrips replaces the vague description with an exact bus-time list', () => {
+// Whole-trip cancellations: COTA's own headerText/descriptionText for these
+// ("Cancelled stops on Route 008 NORTH, SOUTH... between A at 5:57 AM and B
+// at 1:03 PM") is dropped entirely — zero-padded, reads "NORTH, SOUTH" like
+// two routes, and "Cancelled stops" misleads readers into picturing specific
+// stops removed rather than whole buses never running. Replaced with our
+// own line built straight from the alert data.
+test("buildAlertPostText: cancelledTrips drops COTA's confusing header/description for its own exact bus-time list", () => {
   const alert = {
     routeIds: ['008'],
     headerText: 'Cancelled stops on Route 008 NORTH, SOUTH.',
@@ -67,9 +69,11 @@ test('buildAlertPostText: cancelledTrips replaces the vague description with an 
   assert.equal(
     text,
     '⚠ Route 8 (Karl/S High/Parsons) — service alert\n' +
-      'Cancelled stops on Route 008 NORTH, SOUTH.\n' +
       '5 buses cancelled today: 5:57 AM, 7:49 AM, 9:25 AM, 11:18 AM, 1:03 PM',
   );
+  assert.doesNotMatch(text, /008/); // no zero-padded route number leaking through
+  assert.doesNotMatch(text, /NORTH, SOUTH/); // no confusing two-direction phrasing
+  assert.doesNotMatch(text, /Cancelled stops/); // no "stops removed" framing
   assert.doesNotMatch(text, /between A at/); // the vague original description is gone
 });
 

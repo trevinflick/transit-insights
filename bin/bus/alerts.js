@@ -13,6 +13,7 @@ const { buildAlertPostText, buildAlertAltText } = require('../../src/bus/alertPo
 const { getTripMeta, getShapePoints } = require('../../src/shared/gtfs');
 const { renderDisruptionMap } = require('../../src/map');
 const { loginBus, postText, postWithImage } = require('../../src/bus/bluesky');
+const { resolveReplyRef } = require('../../src/shared/bluesky');
 const history = require('../../src/shared/history');
 const { setup, writeDryRunAsset, runBin } = require('../../src/shared/runBin');
 
@@ -55,6 +56,21 @@ async function buildAlertImage(alert) {
     console.warn(`Map render failed for alert ${alert.id} (${e.message}); will post text-only`);
     return null;
   }
+}
+
+// A route can have several independently-cancelled blocks fire their own
+// alert_id over one day — without threading, each one reads like its own
+// complete daily summary rather than an update on the same ongoing day.
+// Finds the most recent already-posted alert today for any of this alert's
+// routes (across multiple routes, picks the most recent — same pattern the
+// old CTA pipeline's findRecentBusPulse used for pulse-threading).
+function findThreadParent(alert, now) {
+  let best = null;
+  for (const route of alert.routeIds || []) {
+    const row = history.findTodaysAlertPostForRoute({ kind: KIND, route }, now);
+    if (row && (!best || row.first_seen_ts > best.first_seen_ts)) best = row;
+  }
+  return best;
 }
 
 async function main() {
@@ -104,8 +120,9 @@ async function main() {
 
     const text = buildAlertPostText(alert);
     const image = await buildAlertImage(alert);
+    const threadParent = findThreadParent(alert, now);
     console.log(
-      `New admitted alert ${alert.id} (routes: ${alert.routeIds.join(', ') || 'none'}${image ? ', with map' : ''})`,
+      `New admitted alert ${alert.id} (routes: ${alert.routeIds.join(', ') || 'none'}${image ? ', with map' : ''}${threadParent ? `, threading under ${threadParent.alert_id}` : ''})`,
     );
 
     if (argv['dry-run']) {
@@ -132,9 +149,12 @@ async function main() {
       now,
     );
     const agent = await getAgent();
+    // resolveReplyRef walks the thread to its current latest leaf, so this
+    // lands correctly even if threadParent itself was already a reply.
+    const replyRef = threadParent ? await resolveReplyRef(agent, threadParent.post_uri) : null;
     const result = image
-      ? await postWithImage(agent, text, image, buildAlertAltText(alert))
-      : await postText(agent, text);
+      ? await postWithImage(agent, text, image, buildAlertAltText(alert), replyRef)
+      : await postText(agent, text, replyRef);
     console.log(`Posted alert ${alert.id}: ${result.url}`);
     history.recordAlertSeen(
       {
