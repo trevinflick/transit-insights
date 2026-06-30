@@ -69,12 +69,57 @@ test("buildAlertPostText: cancelledTrips drops COTA's confusing header/descripti
   assert.equal(
     text,
     '⚠ Route 8 (Karl/S High/Parsons) — service alert\n' +
-      '5 buses cancelled today: 5:57 AM, 7:49 AM, 9:25 AM, 11:18 AM, 1:03 PM',
+      '5 buses cancelled today (Northbound & Southbound): 5:57 AM, 7:49 AM, 9:25 AM, 11:18 AM, 1:03 PM',
   );
   assert.doesNotMatch(text, /008/); // no zero-padded route number leaking through
   assert.doesNotMatch(text, /NORTH, SOUTH/); // no confusing two-direction phrasing
   assert.doesNotMatch(text, /Cancelled stops/); // no "stops removed" framing
   assert.doesNotMatch(text, /between A at/); // the vague original description is gone
+});
+
+test('buildAlertPostText: direction is extracted from headerText and shown parenthetically', () => {
+  const alert = {
+    routeIds: ['007'],
+    headerText: 'Cancelled stops on Route 007 NORTHEAST, SOUTHWEST.',
+    descriptionText: null,
+    cancelledTrips: [
+      { tripId: '1', startTime: '08:00:00' },
+      { tripId: '2', startTime: '10:00:00' },
+    ],
+  };
+  const text = buildAlertPostText(alert);
+  assert.match(text, /\(Northeastbound & Southwestbound\)/);
+  assert.doesNotMatch(text, /NORTHEAST/); // not the raw COTA all-caps form
+});
+
+test('buildAlertPostText: a single direction in the header is formatted correctly', () => {
+  const alert = {
+    routeIds: ['008'],
+    headerText: 'Cancelled stops on Route 008 NORTH.',
+    descriptionText: null,
+    cancelledTrips: [{ tripId: '1', startTime: '09:00:00' }],
+  };
+  const text = buildAlertPostText(alert);
+  assert.match(text, /\(Northbound\)/);
+});
+
+test('buildAlertPostText: a thread reply uses "more buses cancelled" instead of "buses cancelled today"', () => {
+  const alert = {
+    routeIds: ['010'],
+    headerText: 'Cancelled stops on Route 010 EAST, WEST.',
+    descriptionText: null,
+    cancelledTrips: [
+      { tripId: '1', startTime: '05:59:00' },
+      { tripId: '2', startTime: '07:23:00' },
+      { tripId: '3', startTime: '08:56:00' },
+    ],
+  };
+  const reply = buildAlertPostText(alert, { isReply: true });
+  assert.match(reply, /3 more buses cancelled/);
+  assert.doesNotMatch(reply, /cancelled today/);
+  const root = buildAlertPostText(alert, { isReply: false });
+  assert.match(root, /3 buses cancelled today/);
+  assert.doesNotMatch(root, /more buses/);
 });
 
 test('buildAlertPostText: a single cancelled bus uses singular "bus"', () => {

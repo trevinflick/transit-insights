@@ -30,23 +30,64 @@
 // still-to-come (COTA pre-announces a block's whole remaining day at once),
 // so "upcoming" would be wrong for whichever ones already passed by the
 // time this posts; "today" makes no tense claim and is correct either way.
+//
+// Direction is added parenthetically from the headerText COTA already
+// writes ("Cancelled stops on Route 008 NORTH, SOUTH.") — the short
+// cardinal labels there ("NORTH", "SOUTH") are extracted and reformatted as
+// "northbound & southbound" so riders know whether this affects their
+// direction. Whole-block cancellations always affect both directions (the
+// bus runs back and forth all day), but stating that explicitly removes any
+// ambiguity.
 const { routeTitle } = require('./routes');
 const { formatGtfsTimeOfDay } = require('../shared/format');
 const { graphemeLength, POST_MAX_CHARS } = require('../shared/post');
 
-function buildAlertBody(alert) {
+// "Cancelled stops on Route 008 NORTH, SOUTH." → ["NORTH", "SOUTH"]
+// Returns null when the header doesn't match the expected COTA format.
+function extractDirections(headerText) {
+  if (!headerText) return null;
+  const m = headerText.match(/Cancelled stops on Route \d+\s+([A-Z, ]+?)\s*\./);
+  if (!m) return null;
+  return m[1]
+    .split(/,\s*/)
+    .map((d) => d.trim())
+    .filter(Boolean);
+}
+
+// ["NORTH", "SOUTH"] → "northbound & southbound"
+// ["NORTHEAST"] → "northeastbound"
+function formatDirections(dirs) {
+  if (!dirs || dirs.length === 0) return null;
+  const labels = dirs.map((d) => {
+    const s = d.toLowerCase();
+    return s.charAt(0).toUpperCase() + s.slice(1) + 'bound';
+  });
+  if (labels.length === 1) return labels[0];
+  if (labels.length === 2) return `${labels[0]} & ${labels[1]}`;
+  return 'both directions';
+}
+
+function buildAlertBody(alert, { isReply = false } = {}) {
   if (alert.cancelledTrips && alert.cancelledTrips.length > 0) {
     const n = alert.cancelledTrips.length;
     const times = alert.cancelledTrips.map((t) => formatGtfsTimeOfDay(t.startTime)).join(', ');
-    return `${n} bus${n === 1 ? '' : 'es'} cancelled today: ${times}`;
+    const dirs = formatDirections(extractDirections(alert.headerText));
+    const qualifier = dirs ? ` (${dirs})` : '';
+    // "more buses cancelled" signals to a reader scrolling into a thread reply
+    // that this is an additional cancellation on top of whatever's above, not
+    // a standalone daily summary — without needing to know the total upfront.
+    const verb = isReply
+      ? `more bus${n === 1 ? '' : 'es'} cancelled`
+      : `bus${n === 1 ? '' : 'es'} cancelled today`;
+    return `${n} ${verb}${qualifier}: ${times}`;
   }
   return [alert.headerText, alert.descriptionText].filter(Boolean).join('\n');
 }
 
-function buildAlertPostText(alert) {
+function buildAlertPostText(alert, { isReply = false } = {}) {
   const routeTags = (alert.routeIds || []).map((r) => routeTitle(r)).join(', ');
   const tag = routeTags ? `⚠ ${routeTags} — service alert` : '⚠ Service alert';
-  const body = buildAlertBody(alert);
+  const body = buildAlertBody(alert, { isReply });
   const full = body ? `${tag}\n${body}` : tag;
   if (graphemeLength(full) <= POST_MAX_CHARS) return full;
 

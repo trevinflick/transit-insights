@@ -118,9 +118,9 @@ async function main() {
       continue;
     }
 
-    const text = buildAlertPostText(alert);
-    const image = await buildAlertImage(alert);
     const threadParent = findThreadParent(alert, now);
+    const text = buildAlertPostText(alert, { isReply: !!threadParent });
+    const image = await buildAlertImage(alert);
     console.log(
       `New admitted alert ${alert.id} (routes: ${alert.routeIds.join(', ') || 'none'}${image ? ', with map' : ''}${threadParent ? `, threading under ${threadParent.alert_id}` : ''})`,
     );
