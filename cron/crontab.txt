@@ -40,6 +40,10 @@ R=/path/to/cota-insights/bin/cron-run.sh
 # disruptions (see src/bus/alerts.js). COTA's feed refreshes server-side
 # roughly every 30s, so polling faster than this gains nothing.
 4-59/15 *  *  *  *   $R bus-alerts       bin/bus/alerts.js
+# bus-fare-waiver: extreme-heat/cold fare waivers, pinned to the profile
+# while active (see src/bus/fareWaiver.js). Same feed as bus-alerts, offset
+# to a different wall minute so the two don't collide.
+9-59/15 *  *  *  *   $R bus-fare-waiver  bin/bus/fare-waiver.js
 # observe-buses runs every minute. COTA's GTFS-realtime feeds are unauthenticated
 # polled protobuf endpoints (no daily-request cap like CTA's BusTime), so cadence
 # here is about freshness, not quota. bunching/gaps/pulse all read the cache

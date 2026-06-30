@@ -1,12 +1,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { postQuote, getPostRecord, resolveReplyRef } = require('../../src/shared/bluesky');
+const {
+  postQuote,
+  getPostRecord,
+  resolveReplyRef,
+  pinPost,
+  unpinPost,
+} = require('../../src/shared/bluesky');
 
-function makeAgent({ getRecord, post } = {}) {
-  const calls = { getRecord: [], post: [] };
+function makeAgent({ getRecord, putRecord, post, did = 'did:plc:author' } = {}) {
+  const calls = { getRecord: [], putRecord: [], post: [] };
   return {
     calls,
+    session: { did },
     com: {
       atproto: {
         repo: {
@@ -14,6 +21,11 @@ function makeAgent({ getRecord, post } = {}) {
             calls.getRecord.push(params);
             if (typeof getRecord === 'function') return getRecord(params);
             throw new Error('getRecord not stubbed');
+          },
+          putRecord: async (params) => {
+            calls.putRecord.push(params);
+            if (typeof putRecord === 'function') return putRecord(params);
+            return {};
           },
         },
       },
@@ -141,4 +153,78 @@ test('resolveReplyRef inherits root when parent is itself a reply', async () => 
 test('resolveReplyRef returns null on bad URI', async () => {
   const agent = makeAgent();
   assert.equal(await resolveReplyRef(agent, 'garbage'), null);
+});
+
+// --- pinPost / unpinPost: read-modify-write app.bsky.actor.profile -------
+
+test('pinPost reads the existing profile, preserves other fields, and sets pinnedPost', async () => {
+  const agent = makeAgent({
+    getRecord: async () => ({
+      data: { cid: 'bafy-profile', value: { displayName: 'COTA Insights', description: 'bot' } },
+    }),
+  });
+  await pinPost(agent, { uri: 'at://did:plc:author/app.bsky.feed.post/p1', cid: 'bafy-p1' });
+
+  assert.deepEqual(agent.calls.getRecord[0], {
+    repo: 'did:plc:author',
+    collection: 'app.bsky.actor.profile',
+    rkey: 'self',
+  });
+  const put = agent.calls.putRecord[0];
+  assert.deepEqual(put, {
+    repo: 'did:plc:author',
+    collection: 'app.bsky.actor.profile',
+    rkey: 'self',
+    record: {
+      displayName: 'COTA Insights',
+      description: 'bot',
+      pinnedPost: { uri: 'at://did:plc:author/app.bsky.feed.post/p1', cid: 'bafy-p1' },
+    },
+  });
+});
+
+test('pinPost defends against a missing profile record (fresh record, no throw)', async () => {
+  const agent = makeAgent({
+    getRecord: async () => {
+      throw new Error('not found');
+    },
+  });
+  await pinPost(agent, { uri: 'at://did:plc:author/app.bsky.feed.post/p1', cid: 'bafy-p1' });
+  assert.deepEqual(agent.calls.putRecord[0].record, {
+    $type: 'app.bsky.actor.profile',
+    pinnedPost: { uri: 'at://did:plc:author/app.bsky.feed.post/p1', cid: 'bafy-p1' },
+  });
+});
+
+test('unpinPost clears pinnedPost when it matches expectedUri', async () => {
+  const pinnedUri = 'at://did:plc:author/app.bsky.feed.post/p1';
+  const agent = makeAgent({
+    getRecord: async () => ({
+      data: {
+        cid: 'bafy-profile',
+        value: { displayName: 'COTA Insights', pinnedPost: { uri: pinnedUri, cid: 'bafy-p1' } },
+      },
+    }),
+  });
+  await unpinPost(agent, pinnedUri);
+  assert.deepEqual(agent.calls.putRecord[0].record, { displayName: 'COTA Insights' });
+});
+
+test("unpinPost leaves a different pin alone (doesn't clobber an unrelated pin)", async () => {
+  const otherUri = 'at://did:plc:author/app.bsky.feed.post/someoneElse';
+  const agent = makeAgent({
+    getRecord: async () => ({
+      data: { cid: 'bafy-profile', value: { pinnedPost: { uri: otherUri, cid: 'bafy-x' } } },
+    }),
+  });
+  await unpinPost(agent, 'at://did:plc:author/app.bsky.feed.post/p1');
+  assert.equal(agent.calls.putRecord.length, 0);
+});
+
+test('unpinPost no-ops cleanly when nothing is pinned', async () => {
+  const agent = makeAgent({
+    getRecord: async () => ({ data: { cid: 'bafy-profile', value: {} } }),
+  });
+  await unpinPost(agent, 'at://did:plc:author/app.bsky.feed.post/p1');
+  assert.equal(agent.calls.putRecord.length, 0);
 });

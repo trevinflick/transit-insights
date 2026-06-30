@@ -349,6 +349,59 @@ async function postQuote(agent, text, quoted, replyRef = null) {
   return { url: postUrl(result), uri: result.uri, cid: result.cid };
 }
 
+const PROFILE_COLLECTION = 'app.bsky.actor.profile';
+const PROFILE_RKEY = 'self';
+
+// Pin/unpin work by writing `pinnedPost: {uri, cid}` onto the account's own
+// app.bsky.actor.profile record — there's no dedicated pin endpoint, this is
+// the same record that holds displayName/description/avatar/banner, so both
+// helpers read-modify-write it rather than overwriting wholesale.
+async function getProfileRecord(agent) {
+  try {
+    const { data } = await agent.com.atproto.repo.getRecord({
+      repo: agent.session.did,
+      collection: PROFILE_COLLECTION,
+      rkey: PROFILE_RKEY,
+    });
+    return { cid: data.cid, value: data.value };
+  } catch (_) {
+    // No profile record yet (unlikely for a live account, but defend
+    // against it) — treat as an empty one rather than failing the pin.
+    return { cid: null, value: { $type: PROFILE_COLLECTION } };
+  }
+}
+
+async function putProfileRecord(agent, value) {
+  await agent.com.atproto.repo.putRecord({
+    repo: agent.session.did,
+    collection: PROFILE_COLLECTION,
+    rkey: PROFILE_RKEY,
+    record: value,
+  });
+}
+
+// Pin `{uri, cid}` to the top of the account's profile.
+async function pinPost(agent, { uri, cid }) {
+  const { value } = await getProfileRecord(agent);
+  await putProfileRecord(agent, { ...value, pinnedPost: { uri, cid } });
+}
+
+// Unpin, but only if the currently-pinned post is still `expectedUri` —
+// guards against clobbering a different pin set by hand in between (e.g. if
+// someone pinned something manually while ours was up). No-op (with a log)
+// when the live pin doesn't match.
+async function unpinPost(agent, expectedUri) {
+  const { value } = await getProfileRecord(agent);
+  if (value.pinnedPost?.uri !== expectedUri) {
+    console.log(
+      `unpinPost: live pin (${value.pinnedPost?.uri || 'none'}) doesn't match expected ${expectedUri}, leaving it alone`,
+    );
+    return;
+  }
+  const { pinnedPost: _drop, ...rest } = value;
+  await putProfileRecord(agent, rest);
+}
+
 module.exports = {
   login,
   loginAlerts,
@@ -359,4 +412,6 @@ module.exports = {
   postQuote,
   resolveReplyRef,
   getPostRecord,
+  pinPost,
+  unpinPost,
 };
