@@ -46,6 +46,25 @@ function parseTs(s) {
   return Number.isNaN(ms) ? null : ms;
 }
 
+// Returns the local-calendar date value for a UTC ms timestamp —
+// year*10000 + month*100 + day, comparable as an integer.
+function localDateValue(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+}
+
+// Admission gate: true when the advisory's onset **date** (in local time)
+// has been reached, regardless of the exact onset clock time. COTA's policy
+// is all-day on the onset date (e.g. onset at noon → fares waived all day),
+// so a date comparison is correct here — use isNwsAlertActive (below) for
+// the resolution sweep, which needs exact-timestamp precision at the end.
+function isNwsAlertOnsetDateReached(nwsAlert, nowMs = Date.now()) {
+  if (!nwsAlert) return false;
+  const start = parseTs(nwsAlert.onset) ?? parseTs(nwsAlert.effective);
+  if (start == null) return true; // no onset info → treat as already in effect
+  return localDateValue(start) <= localDateValue(nowMs);
+}
+
 // `ends` is the forecast end of the actual hazard; `expires` is just when
 // the CAP message itself expires (often much sooner, as NWS re-issues
 // updates) — prefer `ends`, falling back to `expires` only when `ends` is
@@ -80,6 +99,7 @@ function buildNwsFareWaiverPostText(nwsAlert) {
 module.exports = {
   FARE_WAIVER_EVENTS,
   isFareWaiverTrigger,
+  isNwsAlertOnsetDateReached,
   isNwsAlertActive,
   buildNwsFareWaiverPostText,
 };

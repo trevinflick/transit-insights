@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   isFareWaiverTrigger,
+  isNwsAlertOnsetDateReached,
   isNwsAlertActive,
   buildNwsFareWaiverPostText,
 } = require('../../src/bus/fareWaiverNws');
@@ -38,6 +39,50 @@ test('isFareWaiverTrigger: Watch tiers are excluded (not a declared advisory/war
 
 test('isFareWaiverTrigger: an unrelated event type does not match', () => {
   assert.equal(isFareWaiverTrigger({ event: 'Flood Warning' }), false);
+});
+
+// Advisory issued July 14 for July 15 onset — the scenario that triggered the bug fix.
+const FUTURE_ONSET_ADVISORY = {
+  id: 'urn:oid:2.49.0.1.840.0.abc123.001.1',
+  event: 'Heat Advisory',
+  headline: 'Heat Advisory issued July 14 at 10:00AM EDT until July 15 at 8:00PM EDT',
+  onset: '2026-07-15T12:00:00-04:00', // noon July 15
+  effective: '2026-07-14T10:00:00-04:00',
+  expires: '2026-07-14T18:00:00-04:00',
+  ends: '2026-07-15T20:00:00-04:00',
+  areaDesc: 'Franklin',
+};
+
+test('isNwsAlertOnsetDateReached: does NOT admit a future-onset advisory (issued day before)', () => {
+  // July 14 at any hour — onset date is July 15, not yet reached
+  const july14Morning = Date.parse('2026-07-14T09:00:00-04:00');
+  const july14Evening = Date.parse('2026-07-14T23:00:00-04:00');
+  assert.equal(isNwsAlertOnsetDateReached(FUTURE_ONSET_ADVISORY, july14Morning), false);
+  assert.equal(isNwsAlertOnsetDateReached(FUTURE_ONSET_ADVISORY, july14Evening), false);
+});
+
+test('isNwsAlertOnsetDateReached: admits on onset date even before the onset clock time', () => {
+  // July 15 at 9am — onset is noon July 15, but date has been reached
+  const july15Morning = Date.parse('2026-07-15T09:00:00-04:00');
+  assert.equal(isNwsAlertOnsetDateReached(FUTURE_ONSET_ADVISORY, july15Morning), true);
+});
+
+test('isNwsAlertOnsetDateReached: admits after the onset clock time on onset date', () => {
+  const july15Afternoon = Date.parse('2026-07-15T14:00:00-04:00');
+  assert.equal(isNwsAlertOnsetDateReached(FUTURE_ONSET_ADVISORY, july15Afternoon), true);
+});
+
+test('isNwsAlertOnsetDateReached: admits on days after onset', () => {
+  const july16 = Date.parse('2026-07-16T08:00:00-04:00');
+  assert.equal(isNwsAlertOnsetDateReached(FUTURE_ONSET_ADVISORY, july16), true);
+});
+
+test('isNwsAlertOnsetDateReached: no onset info treated as already in effect', () => {
+  assert.equal(isNwsAlertOnsetDateReached({ onset: null, effective: null }, Date.now()), true);
+});
+
+test('isNwsAlertOnsetDateReached: null alert returns false', () => {
+  assert.equal(isNwsAlertOnsetDateReached(null, Date.now()), false);
 });
 
 test('isNwsAlertActive: real live example is active right now (within onset..ends)', () => {

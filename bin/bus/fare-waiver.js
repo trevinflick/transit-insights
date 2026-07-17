@@ -20,6 +20,7 @@ const { isFareWaiverAlert, buildFareWaiverPostText } = require('../../src/bus/fa
 const { getActiveAlertsForZone } = require('../../src/shared/nws');
 const {
   isFareWaiverTrigger,
+  isNwsAlertOnsetDateReached,
   isNwsAlertActive,
   buildNwsFareWaiverPostText,
 } = require('../../src/bus/fareWaiverNws');
@@ -103,7 +104,9 @@ async function main() {
   const gtfsAdmitted = gtfsAlerts.filter(isFareWaiverAlert);
 
   const nwsAlerts = await getActiveAlertsForZone();
-  const nwsAdmitted = nwsAlerts.filter(isFareWaiverTrigger);
+  const nwsAdmitted = nwsAlerts.filter(
+    (a) => isFareWaiverTrigger(a) && isNwsAlertOnsetDateReached(a, now),
+  );
 
   console.log(
     `${feed.entity.length} COTA alerts (${gtfsAdmitted.length} fare-waiver-shaped), ` +
