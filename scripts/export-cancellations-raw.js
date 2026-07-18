@@ -17,7 +17,8 @@
 //   node scripts/export-cancellations-raw.js [--days=N] [--cancellations-only]
 //
 //   --days=N               only rows first seen in the last N days (default: all)
-//   --cancellations-only   drop reroute/detour rows (those with no trip count)
+//   --cancellations-only   keep only "Cancelled stops" rows (drops reroutes/
+//                          detours), including cancellations with no trip count
 //
 // Writes CSV to stdout.
 
@@ -58,6 +59,19 @@ function dayType(weekdayShort) {
   return 'weekday';
 }
 
+// Classify from COTA's own headline text. Note this is independent of whether
+// we have a trip count: the earliest recall cancellations are genuine
+// 'cancellation' rows whose count the Bluesky backfill couldn't recover
+// (cancelled_trip_count empty). Filter on alert_type — NOT on the count — to
+// get every cancellation.
+function alertType(headline) {
+  const h = headline || '';
+  if (/cancelled stops/i.test(h)) return 'cancellation';
+  if (/reroute/i.test(h)) return 'reroute';
+  if (/detour/i.test(h)) return 'detour';
+  return 'other';
+}
+
 // RFC-4180 CSV field: quote when it contains a comma, quote, or newline;
 // double any embedded quotes.
 function csv(v) {
@@ -78,7 +92,7 @@ function main() {
     params.push(Date.now() - Math.max(1, Number(argv.days)) * DAY_MS);
   }
   if (argv['cancellations-only']) {
-    where += ' AND cancelled_trip_count IS NOT NULL';
+    where += " AND headline LIKE '%ancelled stops%'";
   }
 
   const rows = db
@@ -99,7 +113,8 @@ function main() {
     'date_et',
     'weekday',
     'day_type',
-    'is_cancellation',
+    'alert_type',
+    'has_trip_count',
     'cancelled_trip_count',
     'routes',
     'headline',
@@ -119,6 +134,7 @@ function main() {
       etDate(r.first_seen_ts),
       wd,
       dayType(wd),
+      alertType(r.headline),
       r.cancelled_trip_count != null ? 1 : 0,
       r.cancelled_trip_count ?? '',
       r.routes ?? '',
