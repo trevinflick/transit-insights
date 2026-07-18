@@ -11,7 +11,8 @@
 //
 // The script reads from:
 //   - state/history.sqlite (alert_posts where kind='bus-service-alert')
-//   - data/gtfs/schedule.sqlite (sched_stops, for total daily trip count)
+//   - COTA static GTFS for the per-day-type scheduled-trip denominator
+//     (weekday/Saturday/Sunday — see scripts/lib/gtfsScheduleCounts.js)
 //
 // cancelled_trip_count is only populated for alerts recorded after the column
 // was added. For older rows, the column is NULL and the trip count is shown
@@ -22,6 +23,7 @@ require('../src/shared/env');
 const Path = require('node:path');
 const argv = require('minimist')(process.argv.slice(2));
 const Database = require('better-sqlite3');
+const { loadScheduleCounts } = require('./lib/gtfsScheduleCounts');
 
 const DAYS = Math.max(1, Math.min(365, Number(argv.days) || 30));
 const CSV_MODE = !!argv.csv;
@@ -53,34 +55,22 @@ function startOfDay(ts) {
   return Date.UTC(+y, +m - 1, +day) + offsetMs;
 }
 
-function formatDate(ts) {
-  return new Date(ts).toLocaleDateString('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
 function isoDate(ts) {
   return new Date(ts).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 }
 
-// Load total scheduled trips for today from the GTFS schedule DB. Used as
-// the denominator for %-cancelled. Returns null if the schedule DB is missing.
-function loadTotalScheduledTrips() {
-  const schedPath = Path.join(__dirname, '..', 'data', 'gtfs', 'schedule.sqlite');
-  try {
-    const sched = new Database(schedPath, { readonly: true });
-    const row = sched.prepare('SELECT COUNT(DISTINCT trip_id) as c FROM sched_stops').get();
-    sched.close();
-    return row?.c ?? null;
-  } catch (_e) {
-    return null;
-  }
+// Service-day-type total for a given Eastern calendar day. The %-cancelled
+// denominator must match the day: a weekday cancellation is a share of weekday
+// service (~2,321 trips), not of the all-days union in schedule.sqlite (~5,425,
+// which would understate the impact ~2.3x).
+function serviceTotalForDay(dateKey, totals) {
+  const dow = new Date(`${dateKey}T12:00:00`).getDay(); // 0=Sun … 6=Sat, local
+  if (dow === 0) return totals.sunday;
+  if (dow === 6) return totals.saturday;
+  return totals.weekday;
 }
 
-function main() {
+async function main() {
   const histPath =
     process.env.HISTORY_DB_PATH || Path.join(__dirname, '..', 'state', 'history.sqlite');
   const hist = new Database(histPath, { readonly: true });
@@ -126,18 +116,18 @@ function main() {
 
   const days = [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
-  const totalScheduled = loadTotalScheduledTrips();
+  const { totals } = await loadScheduleCounts();
 
   if (CSV_MODE) {
     process.stdout.write(
-      'date,alert_count,cancelled_trips,routes_affected,total_scheduled,pct_cancelled\n',
+      'date,alert_count,cancelled_trips,routes_affected,scheduled_that_day,pct_cancelled\n',
     );
     for (const [dateKey, d] of days) {
+      const sched = serviceTotalForDay(dateKey, totals);
       const trips = d.hasCount ? d.cancelledTrips : '';
-      const pct =
-        d.hasCount && totalScheduled ? ((d.cancelledTrips / totalScheduled) * 100).toFixed(2) : '';
+      const pct = d.hasCount && sched ? ((d.cancelledTrips / sched) * 100).toFixed(2) : '';
       process.stdout.write(
-        `${dateKey},${d.alerts},${trips},${d.routes.size},${totalScheduled ?? ''},${pct}\n`,
+        `${dateKey},${d.alerts},${trips},${d.routes.size},${sched ?? ''},${pct}\n`,
       );
     }
     return;
@@ -170,11 +160,10 @@ function main() {
   const divider = '─'.repeat(header.length + BAR_WIDTH);
 
   console.log(`\nCOTA bus cancellation analysis — last ${DAYS} days`);
-  if (totalScheduled != null) {
-    console.log(`Total scheduled trips today (GTFS proxy): ${totalScheduled.toLocaleString()}`);
-  } else {
-    console.log('(GTFS schedule unavailable — run npm run fetch-gtfs for % figures)');
-  }
+  console.log(
+    `Scheduled trips by day type: weekday ${totals.weekday.toLocaleString()}, Saturday ${totals.saturday.toLocaleString()}, Sunday ${totals.sunday.toLocaleString()}`,
+  );
+  console.log("(% is that day's cancellations vs that day type's scheduled service)");
   console.log();
   console.log(header);
   console.log(divider);
@@ -188,10 +177,11 @@ function main() {
     if (d.hasCount) totalTrips += d.cancelledTrips;
     if (d.alerts > 0) daysWithData += 1;
 
+    const sched = serviceTotalForDay(dateKey, totals);
     const tripsLabel = d.hasCount ? String(d.cancelledTrips) : d.alerts > 0 ? '?' : '0';
     const pctLabel =
-      d.hasCount && totalScheduled
-        ? `${((d.cancelledTrips / totalScheduled) * 100).toFixed(1)}%`
+      d.hasCount && sched
+        ? `${((d.cancelledTrips / sched) * 100).toFixed(1)}%`
         : d.alerts > 0
           ? '?'
           : '';
@@ -251,7 +241,7 @@ function main() {
   }
 
   console.log(`Active days in window: ${daysWithData} of ${days.length}`);
-  if (totalScheduled != null && totalTrips > 0) {
+  if (totalTrips > 0) {
     const avgPerDay = (totalTrips / Math.max(daysWithData, 1)).toFixed(1);
     console.log(`Average cancelled trips on active days: ${avgPerDay}`);
     console.log(
@@ -260,4 +250,7 @@ function main() {
   }
 }
 
-main();
+main().catch((e) => {
+  console.error('Error:', e.message);
+  process.exit(1);
+});
