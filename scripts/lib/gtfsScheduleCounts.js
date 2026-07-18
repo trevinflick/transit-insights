@@ -53,6 +53,50 @@ function classifyService(p, ci) {
   return 'other';
 }
 
+// Set of service_ids actually running on a specific date, honoring calendar.txt
+// day-of-week + date range AND calendar_dates.txt exceptions (adds/removes).
+// Mirrors fetch-gtfs.js#resolveServiceDayTypes. Use this (not loadServiceClasses)
+// when you need what really operates on a given day — e.g. the summer Zoo bus
+// (Route 141) is added via calendar_dates, so calendar.txt classification alone
+// misses it. `dateStr` accepts 'YYYY-MM-DD' or 'YYYYMMDD'.
+async function resolveServiceIdsForDate(dateStr) {
+  const ymd = String(dateStr).replace(/-/g, '');
+  const y = +ymd.slice(0, 4);
+  const mo = +ymd.slice(4, 6);
+  const d = +ymd.slice(6, 8);
+  const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay(); // 0=Sun … 6=Sat
+  const dayCol = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][
+    dow
+  ];
+
+  const zip = await ensureZip();
+  const cal = readCsv(zip, 'calendar.txt');
+  const ci = (n) => cal.hdr.indexOf(n);
+  const active = new Set();
+  for (const line of cal.rows) {
+    const p = line.split(',');
+    if (p[ci(dayCol)] !== '1') continue;
+    if (ymd < p[ci('start_date')] || ymd > p[ci('end_date')]) continue;
+    active.add(p[ci('service_id')]);
+  }
+
+  let cd;
+  try {
+    cd = readCsv(zip, 'calendar_dates.txt');
+  } catch (_e) {
+    cd = { hdr: [], rows: [] };
+  }
+  const di = (n) => cd.hdr.indexOf(n);
+  for (const line of cd.rows) {
+    const p = line.split(',');
+    if (p[di('date')] !== ymd) continue;
+    const sid = p[di('service_id')];
+    if (p[di('exception_type')] === '1') active.add(sid);
+    else if (p[di('exception_type')] === '2') active.delete(sid);
+  }
+  return active;
+}
+
 // Map<service_id → 'weekday'|'saturday'|'sunday'|'other'> from calendar.txt.
 async function loadServiceClasses() {
   const zip = await ensureZip();
@@ -89,4 +133,10 @@ async function loadScheduleCounts() {
   return { counts, totals };
 }
 
-module.exports = { loadScheduleCounts, loadServiceClasses, ensureZip, readCsv };
+module.exports = {
+  loadScheduleCounts,
+  loadServiceClasses,
+  resolveServiceIdsForDate,
+  ensureZip,
+  readCsv,
+};

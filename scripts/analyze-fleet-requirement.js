@@ -24,19 +24,26 @@
 // Pure schedule analysis — no history DB. Reads COTA static GTFS directly, so
 // it runs anywhere (downloads the feed if not cached).
 //
+// Service is resolved for a specific representative summer weekday (--date) via
+// calendar.txt + calendar_dates.txt, so exception-based service like the summer
+// Zoo bus (Route 141, added through calendar_dates) is correctly included.
+//
 // Usage:
-//   node scripts/analyze-fleet-requirement.js [--layover-max=N] [--csv]
+//   node scripts/analyze-fleet-requirement.js [--layover-max=N] [--date=YYYY-MM-DD] [--csv]
 //
 //   --layover-max=N   gap (min) above which a bus is assumed to pull in
 //                     (default 30). Only affects the midday trough, not the peak.
+//   --date=YYYY-MM-DD representative weekday to resolve service for (default a
+//                     mid-summer Wednesday, when the Zoo bus runs).
 //   --csv             emit the minute-by-minute active-buses curve to stdout
 
 require('../src/shared/env');
 
 const argv = require('minimist')(process.argv.slice(2));
-const { ensureZip, readCsv, loadServiceClasses } = require('./lib/gtfsScheduleCounts');
+const { ensureZip, readCsv, resolveServiceIdsForDate } = require('./lib/gtfsScheduleCounts');
 
 const LAYOVER_MAX = Number.isFinite(Number(argv['layover-max'])) ? Number(argv['layover-max']) : 30;
+const TARGET_DATE = argv.date ? String(argv.date) : '2026-07-15'; // a mid-summer Wednesday
 const CSV_MODE = !!argv.csv;
 const HORIZON_MIN = 30 * 60; // sweep 30h to cover after-midnight (owl) trips
 
@@ -115,9 +122,9 @@ function computePeak(byBlock, layoverMax) {
 
 async function main() {
   const zip = await ensureZip();
-  const svcClass = await loadServiceClasses();
+  const activeServices = await resolveServiceIdsForDate(TARGET_DATE);
 
-  // Weekday trips → route + block.
+  // Trips operating on the target date → route + block.
   const trips = readCsv(zip, 'trips.txt');
   const ti = (n) => trips.hdr.indexOf(n);
   const tripIdx = ti('trip_id');
@@ -127,7 +134,7 @@ async function main() {
   const tripMeta = new Map(); // trip_id → { route, block }
   for (const line of trips.rows) {
     const p = line.split(',');
-    if (svcClass.get(p[svcIdx]) !== 'weekday') continue;
+    if (!activeServices.has(p[svcIdx])) continue;
     tripMeta.set(p[tripIdx], { route: p[routeIdx], block: p[blockIdx] });
   }
 
@@ -189,8 +196,9 @@ async function main() {
 
   console.log('\nCOTA weekday peak vehicle requirement (from GTFS blocks)');
   console.log('='.repeat(64));
-  console.log(`Distinct weekday blocks (bus-days of work): ${byBlock.size}`);
-  console.log(`Weekday revenue trips:                      ${usableTrips}`);
+  console.log(`Service resolved for:                       ${TARGET_DATE} (incl. summer Zoo bus)`);
+  console.log(`Distinct blocks (bus-days of work):         ${byBlock.size}`);
+  console.log(`Revenue trips that day:                     ${usableTrips}`);
   console.log(`Layover pull-in threshold:                  ${LAYOVER_MAX} min\n`);
 
   console.log(
