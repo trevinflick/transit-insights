@@ -415,6 +415,13 @@ function db() {
   if (!alertCols.includes('delay_train_no')) {
     _db.exec('ALTER TABLE alert_posts ADD COLUMN delay_train_no TEXT');
   }
+  // Number of cancelled bus trips in a COTA whole-block cancellation alert.
+  // Set at first-seen time from the alert's deduplicated cancelledTrips list;
+  // NULL for non-cancellation alerts and for rows written before this column
+  // existed (those pre-date the capture, so their trip count is unknown).
+  if (!alertCols.includes('cancelled_trip_count')) {
+    _db.exec('ALTER TABLE alert_posts ADD COLUMN cancelled_trip_count INTEGER');
+  }
   // Seed alert_versions with the current state of every alert_posts row that
   // has no version history yet. Runs once at startup after the table is
   // created (or after an existing DB picks up the new table on this deploy).
@@ -576,6 +583,7 @@ function recordAlertSeen(
     ctaEventEndTs,
     ctaEventStartIsDateOnly,
     ctaEventEndIsDateOnly,
+    cancelledTripCount,
   },
   now = Date.now(),
 ) {
@@ -700,6 +708,7 @@ function recordAlertSeen(
       );
     return;
   }
+  const ctc = cancelledTripCount != null ? cancelledTripCount : null;
   insertVersion();
   db()
     .prepare(`
@@ -709,8 +718,9 @@ function recordAlertSeen(
        affected_from_station, affected_to_station, affected_direction,
        mentioned_stations,
        cta_event_start_ts, cta_event_start_is_date_only,
-       cta_event_end_ts, cta_event_end_is_date_only)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       cta_event_end_ts, cta_event_end_is_date_only,
+       cancelled_trip_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
     .run(
       alertId,
@@ -729,6 +739,7 @@ function recordAlertSeen(
       esDate,
       ee,
       eeDate,
+      ctc,
     );
 }
 

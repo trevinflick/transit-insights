@@ -145,6 +145,7 @@ async function main() {
         headline: alert.headerText,
         shortDescription: alert.descriptionText,
         postUri: null,
+        cancelledTripCount: alert.cancelledTrips?.length ?? null,
       },
       now,
     );
