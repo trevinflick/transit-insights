@@ -14,10 +14,12 @@
 // effective headway.
 //
 // Usage:
-//   node scripts/analyze-cancellations-by-line.js [--days=N] [--csv]
+//   node scripts/analyze-cancellations-by-line.js [--days=N] [--csv] [--recovery=N]
 //
-//   --days=N   window of past days to include (default 30)
-//   --csv      emit per-line CSV to stdout instead of the text report
+//   --days=N       window of past days to include (default 30)
+//   --csv          emit per-line CSV to stdout instead of the text report
+//   --recovery=N   fleet = peak revenue buses x N, for recovery/layover + spares
+//                  (default 1.15; 1 = peak revenue buses only)
 //
 // "Effective headway" is a daily-average estimate: advertised ÷ (1 − share
 // cut). Real gaps cluster worse than the average (cancellations bunch in the
@@ -36,6 +38,10 @@ const DAYS = Math.max(1, Math.min(365, Number(argv.days) || 30));
 const CSV_MODE = !!argv.csv;
 const KIND = 'bus-service-alert';
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Buses-needed is peak revenue-service buses; real fleet assignment adds
+// terminal recovery/layover and spares. Scale the peak by this factor for a
+// closer-to-real estimate. Override with --recovery=N (1 = no adjustment).
+const RECOVERY_FACTOR = Number.isFinite(Number(argv.recovery)) ? Number(argv.recovery) : 1.15;
 
 // --- Eastern-time helpers (COTA is America/New_York) ---
 function etParts(ms) {
@@ -159,12 +165,15 @@ async function main() {
       m.advertisedHeadway != null && pctCut != null && pctCut < 1
         ? m.advertisedHeadway / (1 - pctCut)
         : null;
+    const busesWithRecovery =
+      m.busesNeeded != null ? Math.ceil(m.busesNeeded * RECOVERY_FACTOR) : null;
     rows.push({
       route,
       label: routeLabel(route),
       weekdaySched,
       advertisedHeadway: m.advertisedHeadway ?? null,
       busesNeeded: m.busesNeeded ?? null,
+      busesWithRecovery,
       total: c.total,
       activeDays,
       avgPerActiveDay,
@@ -176,7 +185,7 @@ async function main() {
 
   if (CSV_MODE) {
     process.stdout.write(
-      'route,route_label,weekday_scheduled_trips,advertised_headway_min,buses_needed,cancelled_total_weekday,active_weekdays,avg_cancelled_per_active_day,pct_of_service_cut,effective_headway_min\n',
+      'route,route_label,weekday_scheduled_trips,advertised_headway_min,buses_needed_peak,buses_needed_with_recovery,cancelled_total_weekday,active_weekdays,avg_cancelled_per_active_day,pct_of_service_cut,effective_headway_min\n',
     );
     for (const r of rows) {
       process.stdout.write(
@@ -186,6 +195,7 @@ async function main() {
           r.weekdaySched ?? '',
           r.advertisedHeadway ?? '',
           r.busesNeeded ?? '',
+          r.busesWithRecovery ?? '',
           r.total,
           r.activeDays,
           r.avgPerActiveDay.toFixed(1),
@@ -230,6 +240,7 @@ async function main() {
   const colSched = 7;
   const colHw = 6;
   const colBus = 6;
+  const colFleet = 7;
   const colAvg = 8;
   const colPct = 7;
   const colEff = 8;
@@ -239,25 +250,29 @@ async function main() {
       pad('Sched', colSched) +
       pad('Adv hw', colHw) +
       pad('Buses', colBus) +
+      pad('Fleet', colFleet) +
       pad('Avg/day', colAvg) +
       pad('% cut', colPct) +
       pad('Eff hw', colEff),
   );
-  console.log('─'.repeat(colR + colSched + colHw + colBus + colAvg + colPct + colEff));
+  console.log('─'.repeat(colR + colSched + colHw + colBus + colFleet + colAvg + colPct + colEff));
   for (const r of rows) {
     console.log(
       lpad(r.label, colR) +
         pad(r.weekdaySched ?? '—', colSched) +
         pad(r.advertisedHeadway != null ? `${r.advertisedHeadway}m` : '—', colHw) +
         pad(r.busesNeeded ?? '—', colBus) +
+        pad(r.busesWithRecovery ?? '—', colFleet) +
         pad(r.avgPerActiveDay.toFixed(1), colAvg) +
         pad(r.pctCut != null ? `${(r.pctCut * 100).toFixed(0)}%` : '—', colPct) +
         pad(r.effectiveHeadway != null ? `${r.effectiveHeadway.toFixed(0)}m` : '—', colEff),
     );
   }
   console.log('\nSched = weekday scheduled trips · Adv hw = advertised daytime headway');
-  console.log('Buses = buses in service at peak · Eff hw = effective headway after cuts');
-  console.log('(Effective headway is a daily average; real peak-hour gaps run worse.)');
+  console.log(
+    `Buses = peak buses in revenue service · Fleet = with ${RECOVERY_FACTOR}x recovery/spares`,
+  );
+  console.log('Eff hw = effective headway after cuts (daily average; peak-hour gaps run worse).');
 }
 
 main().catch((e) => {
