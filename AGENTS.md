@@ -57,7 +57,21 @@ load-bearing for `src/bus/api.js` and `scripts/fetch-gtfs.js`:
 
 - `npm test` must pass with zero failures before any commit.
 - Don't auto-commit, push, or pull. Wait to be asked.
-- Deploy = commit + push from local + `git pull` on the server. Never scp.
+- **Deploy is Docker-based** (production runs in the `transit-insights`
+  container, not bare-metal). A `git pull` on the server is NOT enough — the
+  code is baked into the image (`COPY . .`), so a stale container keeps
+  running old code until the image is rebuilt. Full deploy, from
+  `/home/bots/code/transit-insights` on the server:
+  ```
+  git pull && docker compose build && docker compose up -d
+  ```
+  `build` leaves the old container up (no downtime); `up -d` swaps it in.
+  Never scp. Bind-mounts (`state/`, `data/`, `.env`, `cron/`) survive
+  rebuilds, so `state/history.sqlite` is preserved. There is **no `node` on
+  the host** — run scripts with `docker exec transit-insights node <script>`.
+  Schema migrations in `src/shared/history.js#db()` apply on the first DB open
+  after deploy (force one with
+  `docker exec transit-insights node -e "require('/app/src/shared/history').getDb()"`).
 - Don't hardcode usernames/paths in committed configs — parameterize and
   substitute at install time (`scripts/install-crontab.sh`,
   `scripts/install-logrotate.sh`).

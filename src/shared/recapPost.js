@@ -91,10 +91,61 @@ function buildGapReplyAlt({ mode, window, windowLabel, entries, totalGaps, forma
   return `Horizontal bar chart of headway gaps by ${mode === 'bus' ? 'route' : 'line'} ${inPhrase}: ${totalGaps} total gaps. Worst: ${top}.`;
 }
 
+// Whole-block bus cancellation summary for the recap thread (a reply under
+// the bunching/gap thread, or a standalone post when there's no bunching to
+// anchor it). `summary` is loadCancellationSummary()'s shape. `formatRoute`
+// renders a route_id (e.g. routeLabel → "Route 6"); defaults to the raw id.
+// Numbers are trip counts, not vehicle counts — a cancelled trip is one
+// scheduled run that never operated (see src/bus/alertPost.js).
+function buildCancellationReplyText({ window, windowLabel, summary, formatRoute }) {
+  const label = windowLabel || WINDOW_LABELS[window] || window;
+  const lines = [`🚫 Buses cancelled, ${label}`];
+  if (!summary || summary.totalCancelled === 0) {
+    lines.push('', 'No bus cancellations recorded in this window.');
+    return lines.join('\n');
+  }
+  const trips = pluralize(summary.totalCancelled, 'scheduled bus trip', 'scheduled bus trips');
+  const days = pluralize(summary.activeDays, 'day', 'days');
+  const avg = Math.round(summary.avgPerActiveDay);
+  let headline = `${trips} cancelled across ${days}`;
+  const bits = [`avg ${avg}/day`];
+  if (summary.peakDay) bits.push(`peak ${summary.peakDay.count} on ${summary.peakDay.label}`);
+  headline += ` (${bits.join(', ')}).`;
+  lines.push('', headline);
+
+  if (summary.topRoutes && summary.topRoutes.length > 0) {
+    lines.push('', 'Hardest hit:');
+    for (const r of summary.topRoutes.slice(0, 3)) {
+      const name = formatRoute ? formatRoute(r.route) : r.route;
+      lines.push(`· ${name} (${r.count})`);
+    }
+  }
+  lines.push('', OBSERVED_FOOTER);
+  return lines.join('\n');
+}
+
+function buildCancellationReplyAlt({ window, windowLabel, summary, formatRoute }) {
+  const label = windowLabel || WINDOW_LABELS[window] || window;
+  const inPhrase = windowLabel ? `from ${label}` : label;
+  if (!summary || summary.totalCancelled === 0) {
+    return `No COTA bus cancellations were recorded ${inPhrase}.`;
+  }
+  const top = (summary.topRoutes || [])
+    .slice(0, 3)
+    .map((r) => `${formatRoute ? formatRoute(r.route) : r.route} (${r.count})`)
+    .join(', ');
+  const peak = summary.peakDay
+    ? `, peaking at ${summary.peakDay.count} on ${summary.peakDay.label}`
+    : '';
+  return `Summary of COTA whole-block bus cancellations ${inPhrase}: ${summary.totalCancelled} scheduled trips cancelled across ${summary.activeDays} days${peak}. Hardest hit: ${top}.`;
+}
+
 module.exports = {
   buildPostText,
   buildAltText,
   buildGapReplyText,
   buildGapReplyAlt,
+  buildCancellationReplyText,
+  buildCancellationReplyAlt,
   titleFor,
 };

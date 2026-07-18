@@ -104,6 +104,66 @@ function loadGapLeaderboard(kind, since, until) {
   return rows.map((r) => ({ route: r.route, count: r.count }));
 }
 
+// Aggregates whole-block bus cancellations for the recap window. Each
+// alert_posts row (kind='bus-service-alert') with a non-null
+// cancelled_trip_count is one COTA cancellation announcement; a "3 more buses
+// cancelled" thread reply is its own alert_id/row, so summing every row's
+// count over the window is the total cancelled bus trips (matches how the
+// Bluesky post history tallies). Rows without a count (reroutes/detours, or
+// alerts predating trip-count tracking) are excluded by the WHERE clause.
+//
+// Anchored on first_seen_ts (when COTA published the cancellation), grouped
+// into Eastern calendar days so "peak day" and "days with cancellations" line
+// up with how a rider reads the week.
+function loadCancellationSummary(since, until) {
+  const db = getDb();
+  const rows = db
+    .prepare(`
+    SELECT routes, first_seen_ts, cancelled_trip_count
+    FROM alert_posts
+    WHERE kind = 'bus-service-alert'
+      AND cancelled_trip_count IS NOT NULL
+      AND first_seen_ts >= ? AND first_seen_ts < ?
+  `)
+    .all(since, until);
+
+  let totalCancelled = 0;
+  const byDay = new Map(); // dayKey → { count, ms } (ms = earliest ts that day)
+  const byRoute = new Map(); // route_id → count
+  for (const r of rows) {
+    const n = r.cancelled_trip_count;
+    totalCancelled += n;
+    const dayKey = ctDateKey(r.first_seen_ts);
+    const day = byDay.get(dayKey) || { count: 0, ms: r.first_seen_ts };
+    day.count += n;
+    day.ms = Math.min(day.ms, r.first_seen_ts);
+    byDay.set(dayKey, day);
+    for (const route of (r.routes || '').split(',').filter(Boolean)) {
+      const key = route.trim();
+      byRoute.set(key, (byRoute.get(key) || 0) + n);
+    }
+  }
+
+  const days = [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const activeDays = days.length;
+  const peak = days.reduce(
+    (best, cur) => (cur[1].count > (best?.[1].count ?? -1) ? cur : best),
+    null,
+  );
+  const topRoutes = [...byRoute.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([route, count]) => ({ route, count }));
+
+  return {
+    totalCancelled,
+    alertCount: rows.length,
+    activeDays,
+    avgPerActiveDay: activeDays ? totalCancelled / activeDays : 0,
+    peakDay: peak ? { label: ctShortLabel(peak[1].ms), count: peak[1].count } : null,
+    topRoutes,
+  };
+}
+
 // Probe both ET offsets (EST=-5, EDT=-4) and pick the one that round-trips
 // to the desired wall time — avoids pulling in a tz library.
 function ctWallTimeAsUtcMs(year, month, day, hour) {
@@ -139,6 +199,22 @@ function ctDateParts(ms) {
   }).formatToParts(new Date(ms));
   const get = (t) => parseInt(parts.find((p) => p.type === t).value, 10);
   return { year: get('year'), month: get('month'), day: get('day') };
+}
+
+// "2026-07-16" (Eastern calendar day) — a sortable per-day grouping key.
+function ctDateKey(ms) {
+  const { year, month, day } = ctDateParts(ms);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+// "Thu, Jul 16" — reader-facing short label in Eastern time.
+function ctShortLabel(ms) {
+  return new Date(ms).toLocaleDateString('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 const MONTH_NAMES = [
@@ -198,6 +274,7 @@ function formatRangeLabel(start, end) {
 module.exports = {
   loadBusHeatmap,
   loadGapLeaderboard,
+  loadCancellationSummary,
   rangeForWindow,
   // exported for tests
   bucket,
