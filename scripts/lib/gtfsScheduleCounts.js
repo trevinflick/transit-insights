@@ -53,11 +53,9 @@ function classifyService(p, ci) {
   return 'other';
 }
 
-// Returns { counts: { weekday: Map<route,n>, saturday, sunday },
-//           totals: { weekday, saturday, sunday } }.
-async function loadScheduleCounts() {
+// Map<service_id → 'weekday'|'saturday'|'sunday'|'other'> from calendar.txt.
+async function loadServiceClasses() {
   const zip = await ensureZip();
-
   const cal = readCsv(zip, 'calendar.txt');
   const ci = (n) => cal.hdr.indexOf(n);
   const svcClass = new Map();
@@ -65,6 +63,14 @@ async function loadScheduleCounts() {
     const p = line.split(',');
     svcClass.set(p[ci('service_id')], classifyService(p, ci));
   }
+  return svcClass;
+}
+
+// Returns { counts: { weekday: Map<route,n>, saturday, sunday },
+//           totals: { weekday, saturday, sunday } }.
+async function loadScheduleCounts() {
+  const zip = await ensureZip();
+  const svcClass = await loadServiceClasses();
 
   const trips = readCsv(zip, 'trips.txt');
   const ti = (n) => trips.hdr.indexOf(n);
@@ -83,4 +89,4 @@ async function loadScheduleCounts() {
   return { counts, totals };
 }
 
-module.exports = { loadScheduleCounts };
+module.exports = { loadScheduleCounts, loadServiceClasses, ensureZip, readCsv };
