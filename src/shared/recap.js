@@ -237,10 +237,27 @@ const MONTH_NAMES = [
 // rolling 30-day window.
 function rangeForWindow(window, now = Date.now()) {
   if (window === 'week') {
-    const until = now;
-    const since = until - 7 * DAY_MS;
-    const startParts = ctDateParts(since);
-    const endParts = ctDateParts(until);
+    // The 7 full calendar days ending yesterday (Eastern). Anchoring to
+    // start-of-day (rather than the old until=now) keeps the window exactly
+    // 7 days and keeps the post day itself out of the label — a Sun Jul 19
+    // run reports "Jul 12 – 18", not "Jul 12 – 19". Dates are computed via UTC
+    // arithmetic then resolved to ET midnight so the window stays
+    // calendar-aligned and DST-safe (same approach as the month branch).
+    const today = ctDateParts(now);
+    const startCal = new Date(Date.UTC(today.year, today.month - 1, today.day - 7));
+    const endCal = new Date(Date.UTC(today.year, today.month - 1, today.day - 1));
+    const startParts = {
+      year: startCal.getUTCFullYear(),
+      month: startCal.getUTCMonth() + 1,
+      day: startCal.getUTCDate(),
+    };
+    const endParts = {
+      year: endCal.getUTCFullYear(),
+      month: endCal.getUTCMonth() + 1,
+      day: endCal.getUTCDate(),
+    };
+    const since = ctWallTimeAsUtcMs(startParts.year, startParts.month, startParts.day, 0);
+    const until = ctWallTimeAsUtcMs(today.year, today.month, today.day, 0);
     return { since, until, label: formatRangeLabel(startParts, endParts) };
   }
   if (window === 'month') {

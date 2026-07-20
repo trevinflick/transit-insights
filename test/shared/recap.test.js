@@ -80,3 +80,12 @@ test('rangeForWindow month on Jan 1 covers the prior December with year', () => 
   const r = rangeForWindow('month', Date.UTC(2026, 0, 1, 15));
   assert.equal(r.label, 'Dec 1 – 31, 2025');
 });
+
+test('rangeForWindow week covers the 7 full days ending yesterday, not the post day', () => {
+  // Sunday Jul 19 2026, 10:20 AM ET (14:20 UTC) — when bus-recap --window=week runs.
+  const r = rangeForWindow('week', Date.UTC(2026, 6, 19, 14, 20));
+  // Reports the prior week (Jul 12–18), excluding the post day (Jul 19).
+  assert.equal(r.label, 'Jul 12 – 18');
+  // Window is exactly 7 calendar days, aligned to ET midnight boundaries.
+  assert.equal(r.until - r.since, 7 * 24 * 60 * 60 * 1000);
+});
