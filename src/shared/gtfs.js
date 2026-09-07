@@ -304,6 +304,17 @@ function getShapePoints(shapeId) {
   return index.shapes?.[shapeId] || null;
 }
 
+// Total distinct scheduled bus trips per day type (weekday/saturday/sunday),
+// tallied by fetch-gtfs.js from tripMeta — the cancellation-rate denominator
+// for the recap (src/shared/recap.js#loadCancellationSummary). Null on an
+// index built before this field existed, or missing a key entirely when
+// today's calendar_dates exceptions dropped a whole day type's calendar (a
+// holiday) — callers should treat that as "can't compute a rate" rather than
+// zero scheduled service.
+function getDayTypeTripTotals() {
+  return loadIndex().dayTypeTripTotals || null;
+}
+
 // --- Bus schedule adherence (how late/early a specific bus is) ---
 //
 // A live vehicle self-reports the scheduled start of the trip it's running
@@ -441,4 +452,5 @@ module.exports = {
   hourlyLookup,
   getTripMeta,
   getShapePoints,
+  getDayTypeTripTotals,
 };

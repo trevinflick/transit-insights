@@ -10,7 +10,7 @@
 
 const ROLLUP_SOURCES = new Set(['gap', 'ghost', 'thin-gap']);
 const MIN_SEVERITY = 0.5;
-// ~30% of the 27 routes gap/ghost/thin-gap detection actually covers
+// ~30% of the 28 routes gap/ghost/thin-gap detection actually covers
 // (gaps ∪ ghosts ∪ lowFrequency in src/bus/routes.js) — high enough that a
 // handful of routine, unrelated gaps in any 2-hour window doesn't trip it.
 const MIN_ROUTES_FOR_ROLLUP = 8;

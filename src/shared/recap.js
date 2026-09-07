@@ -6,6 +6,7 @@
 const Path = require('node:path');
 const Fs = require('fs-extra');
 const { getDb } = require('./history');
+const { getDayTypeTripTotals, dayTypeFor } = require('./gtfs');
 
 const PATTERNS_DIR = Path.join(__dirname, '..', '..', 'data', 'patterns');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -115,6 +116,11 @@ function loadGapLeaderboard(kind, since, until) {
 // Anchored on first_seen_ts (when COTA published the cancellation), grouped
 // into Eastern calendar days so "peak day" and "days with cancellations" line
 // up with how a rider reads the week.
+//
+// Also splits weekday vs. weekend (Sat+Sun) and, where the GTFS schedule
+// supports it (see scheduledTripsForWindow below), expresses each as a % of
+// scheduled trips — the *Pct fields are null when that denominator can't be
+// computed (stale/missing/holiday-thinned index), not zero.
 function loadCancellationSummary(since, until) {
   const db = getDb();
   const rows = db
@@ -128,11 +134,15 @@ function loadCancellationSummary(since, until) {
     .all(since, until);
 
   let totalCancelled = 0;
+  let weekdayCancelled = 0;
+  let weekendCancelled = 0; // saturday + sunday
   const byDay = new Map(); // dayKey → { count, ms } (ms = earliest ts that day)
   const byRoute = new Map(); // route_id → count
   for (const r of rows) {
     const n = r.cancelled_trip_count;
     totalCancelled += n;
+    if (dayTypeFor(new Date(r.first_seen_ts)) === 'weekday') weekdayCancelled += n;
+    else weekendCancelled += n;
     const dayKey = ctDateKey(r.first_seen_ts);
     const day = byDay.get(dayKey) || { count: 0, ms: r.first_seen_ts };
     day.count += n;
@@ -154,6 +164,9 @@ function loadCancellationSummary(since, until) {
     .sort((a, b) => b[1] - a[1])
     .map(([route, count]) => ({ route, count }));
 
+  const scheduled = scheduledTripsForWindow(since, until);
+  const pct = (n, d) => (d ? (n / d) * 100 : null);
+
   return {
     totalCancelled,
     alertCount: rows.length,
@@ -161,7 +174,75 @@ function loadCancellationSummary(since, until) {
     avgPerActiveDay: activeDays ? totalCancelled / activeDays : 0,
     peakDay: peak ? { label: ctShortLabel(peak[1].ms), count: peak[1].count } : null,
     topRoutes,
+    weekdayCancelled,
+    weekendCancelled,
+    totalScheduled: scheduled?.totalScheduled ?? null,
+    weekdayScheduled: scheduled?.weekdayScheduled ?? null,
+    weekendScheduled: scheduled?.weekendScheduled ?? null,
+    pctCancelled: scheduled ? pct(totalCancelled, scheduled.totalScheduled) : null,
+    weekdayPctCancelled: scheduled ? pct(weekdayCancelled, scheduled.weekdayScheduled) : null,
+    weekendPctCancelled: scheduled ? pct(weekendCancelled, scheduled.weekendScheduled) : null,
   };
+}
+
+// How many scheduled bus trips SHOULD have run over [since, until), split by
+// weekday vs. weekend (Saturday + Sunday) — the denominator for the recap's
+// "% of trips cancelled" line. Derived from the *current* GTFS schedule's
+// per-day-type trip totals (fetch-gtfs.js#dayTypeTripTotals), not a real
+// historical record — data/gtfs/index.json only ever represents "today"'s
+// schedule (see AGENTS.md), so this assumes the schedule was stable across
+// the window. That assumption breaks around a service change (a new
+// schedule mid-window undercounts/overcounts one side), but there's no
+// archived per-day historical schedule to do better against. Returns null
+// when the index has no (or only a holiday-thinned) day-type breakdown —
+// callers should omit the percentage rather than show a wrong one. Also
+// returns null (never throws) when the index itself is missing or stale —
+// getDayTypeTripTotals/loadIndex fail loud for detectors that need a fresh
+// schedule, but a missing GTFS index shouldn't take down the whole recap
+// (bunching, gaps, cancellation counts) just to add this one percentage.
+function scheduledTripsForWindow(since, until) {
+  let totals;
+  try {
+    totals = getDayTypeTripTotals();
+  } catch (_e) {
+    return null;
+  }
+  if (!totals?.weekday || !totals?.saturday || !totals?.sunday) return null;
+  const days = daysInWindowByType(since, until);
+  const weekdayScheduled = totals.weekday * days.weekday;
+  const weekendScheduled = totals.saturday * days.saturday + totals.sunday * days.sunday;
+  return {
+    weekdayScheduled,
+    weekendScheduled,
+    totalScheduled: weekdayScheduled + weekendScheduled,
+  };
+}
+
+// Walks every Eastern calendar day in [since, until) and buckets it by
+// weekday/saturday/sunday. Pure calendar-date arithmetic (UTC-based day
+// increments, like rangeForWindow below) — the only Eastern-time-zone lookup
+// is re-deriving each candidate day's real midnight ms to compare against
+// `until`.
+function daysInWindowByType(since, until) {
+  const start = ctDateParts(since);
+  const counts = { weekday: 0, saturday: 0, sunday: 0 };
+  for (let i = 0; ; i++) {
+    const cursor = new Date(Date.UTC(start.year, start.month - 1, start.day + i));
+    const cursorMs = ctWallTimeAsUtcMs(
+      cursor.getUTCFullYear(),
+      cursor.getUTCMonth() + 1,
+      cursor.getUTCDate(),
+      0,
+    );
+    if (cursorMs >= until) break;
+    const dow = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'short' }).format(
+      cursor,
+    );
+    if (dow === 'Sat') counts.saturday++;
+    else if (dow === 'Sun') counts.sunday++;
+    else counts.weekday++;
+  }
+  return counts;
 }
 
 // Probe both ET offsets (EST=-5, EDT=-4) and pick the one that round-trips
@@ -296,4 +377,5 @@ module.exports = {
   // exported for tests
   bucket,
   formatRangeLabel,
+  daysInWindowByType,
 };

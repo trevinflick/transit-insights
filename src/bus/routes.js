@@ -20,6 +20,7 @@ const names = {
   '023': 'James-Stelzer',
   '024': 'Hamilton Rd',
   '025': 'Brice',
+  '030': 'Hilliard-OSU',
   '031': 'Hudson',
   '032': 'N Broadway',
   '033': 'Henderson',
@@ -65,7 +66,12 @@ const names = {
 //     DIFFERENT failure mode (no single pattern's gaps are irregular, so
 //     resolveHourlyHeadway's check never fires) and remains unfixed — don't
 //     trust the computed numbers for routes that exhibit it; verify against
-//     a real source before adding/removing here.
+//     a real source before adding/removing here. CONFIRMED for route 1 as of
+//     the 2026-09-07 schedule change: COTA now brands it as two lines,
+//     "Line 1 Kenny" (extended north to OSU Outpatient Care Dublin) and
+//     "Line 1 Livingston" (to Reynoldsburg Park & Ride), but it's still one
+//     GTFS route_id ("001") with two trip_headsign branches — no route-id
+//     change needed here, `names['001']` stays "Kenny/Livingston".
 const gaps = ['001', '002', '006', '008', '010', '023', '034', '101'];
 
 // Routes polled for ghost-bus detection. Independent of bunching/gaps: a
@@ -110,6 +116,7 @@ const lowFrequency = [
   '022', // 30.0 min
   '024', // 30.0 min
   '025', // 50.0 min
+  '030', // 30.0 min (new route, launched 2026-09-07 — Hilliard-OSU)
   '031', // 30.0 min
   '032', // ~60 min (fallback — branch-alternating, see note above)
   '033', // ~30 min (fallback — branch-alternating, see note above)

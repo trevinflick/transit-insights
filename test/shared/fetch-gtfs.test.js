@@ -6,6 +6,7 @@ const {
   resolveServiceDayTypes,
   computeFallbackHeadway,
   resolveHourlyHeadway,
+  isZipFreshForToday,
 } = require('../../scripts/fetch-gtfs');
 
 function mkTrips(spec) {
@@ -257,4 +258,27 @@ test('resolveHourlyHeadway: fewer than 2 departures returns null', () => {
 test('resolveHourlyHeadway: unsorted input is sorted before measuring gaps', () => {
   const times = mkTimes([30, 0, 45, 15]);
   assert.equal(resolveHourlyHeadway(times), 15);
+});
+
+// --- isZipFreshForToday: same-calendar-day cache check (2026-09-07 incident) --
+
+test('isZipFreshForToday: a zip downloaded earlier the same day is fresh', () => {
+  const mtime = new Date(2026, 8, 7, 3, 15, 1).getTime(); // Sep 7, 3:15:01 AM local
+  assert.equal(isZipFreshForToday(mtime, '20260907'), true);
+});
+
+test('isZipFreshForToday: a zip from yesterday is stale even though under 24h old', () => {
+  // Downloaded Sep 6 03:15:01, checked Sep 7 03:15:01 — exactly 24h, and any
+  // real cron run lands a hair under 24h since the download itself took a
+  // moment. The old rolling-age check treated this as "cached"; a schedule
+  // cutover landing on that boundary (the actual 2026-09-07 incident) then
+  // silently served the prior day's expired schedule with zero valid
+  // service_ids.
+  const mtime = new Date(2026, 8, 6, 3, 15, 1).getTime();
+  assert.equal(isZipFreshForToday(mtime, '20260907'), false);
+});
+
+test('isZipFreshForToday: a zip from a prior month/year is stale', () => {
+  const mtime = new Date(2026, 7, 31, 23, 59, 59).getTime(); // Aug 31
+  assert.equal(isZipFreshForToday(mtime, '20260901'), false);
 });

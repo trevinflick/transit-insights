@@ -1,3 +1,5 @@
+const { POST_MAX_CHARS, graphemeLength } = require('./post');
+
 const WINDOW_LABELS = { week: 'this week', month: 'this month' };
 const OBSERVED_FOOTER = 'Only what the bot observed; real totals may be higher.';
 
@@ -91,17 +93,39 @@ function buildGapReplyAlt({ mode, window, windowLabel, entries, totalGaps, forma
   return `Horizontal bar chart of headway gaps by ${mode === 'bus' ? 'route' : 'line'} ${inPhrase}: ${totalGaps} total gaps. Worst: ${top}.`;
 }
 
+function formatPct(n) {
+  return `${n.toFixed(1)}%`;
+}
+
+// "That's 4.3% of 40,000 scheduled trips — 4.0% weekdays, 5.1% weekends."
+// Null when loadCancellationSummary couldn't resolve a scheduled-trip
+// denominator (stale/missing/holiday-thinned GTFS index) — omit the line
+// entirely rather than show a wrong or half-blank rate.
+function buildCancellationRateLine(summary) {
+  if (summary.pctCancelled == null || summary.totalScheduled == null) return null;
+  let line = `That's ${formatPct(summary.pctCancelled)} of ${summary.totalScheduled.toLocaleString('en-US')} scheduled trips`;
+  const splits = [];
+  if (summary.weekdayPctCancelled != null)
+    splits.push(`${formatPct(summary.weekdayPctCancelled)} weekdays`);
+  if (summary.weekendPctCancelled != null)
+    splits.push(`${formatPct(summary.weekendPctCancelled)} weekends`);
+  if (splits.length) line += ` — ${splits.join(', ')}`;
+  return `${line}.`;
+}
+
 // Whole-block bus cancellation summary for the recap thread (a reply under
 // the bunching/gap thread, or a standalone post when there's no bunching to
 // anchor it). `summary` is loadCancellationSummary()'s shape. `formatRoute`
 // renders a route_id (e.g. routeLabel → "Route 6"); defaults to the raw id.
-// Numbers are trip counts, not vehicle counts — a cancelled trip is one
-// scheduled run that never operated (see src/bus/alertPost.js).
+// Numbers are trip counts, not vehicle counts — a cancelled bus trip is one
+// scheduled run that never operated (see src/bus/alertPost.js). Said as
+// "bus trips," not just "buses," so the count reads as scheduled runs, not
+// vehicles pulled from service.
 function buildCancellationReplyText({ window, windowLabel, summary, formatRoute }) {
   const label = windowLabel || WINDOW_LABELS[window] || window;
-  const lines = [`🚫 Buses cancelled, ${label}`];
+  const lines = [`🚫 Bus trips cancelled, ${label}`];
   if (!summary || summary.totalCancelled === 0) {
-    lines.push('', 'No bus cancellations recorded in this window.');
+    lines.push('', 'No bus trips cancelled in this window.');
     return lines.join('\n');
   }
   const trips = pluralize(summary.totalCancelled, 'scheduled bus trip', 'scheduled bus trips');
@@ -113,22 +137,33 @@ function buildCancellationReplyText({ window, windowLabel, summary, formatRoute 
   headline += ` (${bits.join(', ')}).`;
   lines.push('', headline);
 
+  const restLines = [];
   if (summary.topRoutes && summary.topRoutes.length > 0) {
-    lines.push('', 'Hardest hit:');
+    restLines.push('', 'Hardest hit:');
     for (const r of summary.topRoutes.slice(0, 3)) {
       const name = formatRoute ? formatRoute(r.route) : r.route;
-      lines.push(`· ${name} (${r.count})`);
+      restLines.push(`· ${name} (${r.count})`);
     }
   }
-  lines.push('', OBSERVED_FOOTER);
-  return lines.join('\n');
+  restLines.push('', OBSERVED_FOOTER);
+
+  // The rate line is a nice-to-have on top of an already space-tight post —
+  // insert it right after the headline only if there's room, rather than
+  // risk pushing an otherwise-fitting post over Bluesky's 300-grapheme cap.
+  const withoutRate = [...lines, ...restLines].join('\n');
+  const rateLine = buildCancellationRateLine(summary);
+  if (rateLine) {
+    const withRate = [...lines, rateLine, ...restLines].join('\n');
+    if (graphemeLength(withRate) <= POST_MAX_CHARS) return withRate;
+  }
+  return withoutRate;
 }
 
 function buildCancellationReplyAlt({ window, windowLabel, summary, formatRoute }) {
   const label = windowLabel || WINDOW_LABELS[window] || window;
   const inPhrase = windowLabel ? `from ${label}` : label;
   if (!summary || summary.totalCancelled === 0) {
-    return `No COTA bus cancellations were recorded ${inPhrase}.`;
+    return `No COTA bus trips were cancelled ${inPhrase}.`;
   }
   const top = (summary.topRoutes || [])
     .slice(0, 3)
@@ -137,7 +172,9 @@ function buildCancellationReplyAlt({ window, windowLabel, summary, formatRoute }
   const peak = summary.peakDay
     ? `, peaking at ${summary.peakDay.count} on ${summary.peakDay.label}`
     : '';
-  return `Summary of COTA whole-block bus cancellations ${inPhrase}: ${summary.totalCancelled} scheduled trips cancelled across ${summary.activeDays} days${peak}. Hardest hit: ${top}.`;
+  const rateLine = buildCancellationRateLine(summary);
+  const rate = rateLine ? ` ${rateLine}` : '';
+  return `Summary of COTA whole-block bus trip cancellations ${inPhrase}: ${summary.totalCancelled} scheduled trips cancelled across ${summary.activeDays} days${peak}.${rate} Hardest hit: ${top}.`;
 }
 
 module.exports = {

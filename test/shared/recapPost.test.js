@@ -77,6 +77,14 @@ const cancelSummary = {
     { route: '008', count: 222 },
     { route: '033', count: 201 },
   ],
+  weekdayCancelled: 1200,
+  weekendCancelled: 508,
+  totalScheduled: 40000,
+  weekdayScheduled: 30000,
+  weekendScheduled: 10000,
+  pctCancelled: 4.27,
+  weekdayPctCancelled: 4.0,
+  weekendPctCancelled: 5.08,
 };
 
 test('buildCancellationReplyText reports total, average, peak, and top-3 routes', () => {
@@ -87,6 +95,7 @@ test('buildCancellationReplyText reports total, average, peak, and top-3 routes'
     formatRoute: routeLabel,
   });
   assert.ok(text.includes('🚫'));
+  assert.ok(text.includes('Bus trips cancelled'));
   assert.ok(text.includes('Jul 11 – 18'));
   assert.ok(text.includes('1708 scheduled bus trips cancelled across 6 days'));
   assert.ok(text.includes('avg 285/day'));
@@ -97,6 +106,34 @@ test('buildCancellationReplyText reports total, average, peak, and top-3 routes'
   // Only top 3 routes are named.
   assert.ok(!text.includes('Route 33'));
   assert.ok(text.includes('real totals may be higher'));
+  // This fixture's headline + 3 hardest-hit routes + footer already sit near
+  // Bluesky's 300-grapheme cap, so the rate line — a nice-to-have — is
+  // correctly dropped rather than pushing the post over budget. See the
+  // "when it fits" test below for the line actually appearing.
+  assert.ok(!text.includes("That's"));
+});
+
+test('buildCancellationReplyText includes the cancellation rate when there is room', () => {
+  const text = buildCancellationReplyText({
+    window: 'week',
+    windowLabel: 'Jul 11 – 18',
+    summary: { ...cancelSummary, topRoutes: cancelSummary.topRoutes.slice(0, 1) },
+    formatRoute: routeLabel,
+  });
+  assert.ok(text.includes("That's 4.3% of 40,000 scheduled trips"));
+  assert.ok(text.includes('4.0% weekdays'));
+  assert.ok(text.includes('5.1% weekends'));
+});
+
+test('buildCancellationReplyText omits the rate line when the schedule denominator is unavailable', () => {
+  const text = buildCancellationReplyText({
+    window: 'week',
+    windowLabel: 'Jul 11 – 18',
+    summary: { ...cancelSummary, totalScheduled: null, pctCancelled: null },
+    formatRoute: routeLabel,
+  });
+  assert.ok(!text.includes("That's"));
+  assert.ok(text.includes('1708 scheduled bus trips cancelled across 6 days'));
 });
 
 test('buildCancellationReplyText handles an empty window cleanly', () => {
@@ -106,11 +143,11 @@ test('buildCancellationReplyText handles an empty window cleanly', () => {
     summary: { totalCancelled: 0, activeDays: 0, topRoutes: [] },
     formatRoute: routeLabel,
   });
-  assert.ok(text.includes('No bus cancellations recorded'));
+  assert.ok(text.includes('No bus trips cancelled'));
   assert.ok(!text.includes('Hardest hit'));
 });
 
-test('buildCancellationReplyAlt summarizes cancellations for screen readers', () => {
+test('buildCancellationReplyAlt summarizes cancellations, including the rate, for screen readers', () => {
   const alt = buildCancellationReplyAlt({
     window: 'week',
     windowLabel: 'Jul 11 – 18',
@@ -119,5 +156,8 @@ test('buildCancellationReplyAlt summarizes cancellations for screen readers', ()
   });
   assert.ok(alt.includes('1708 scheduled trips cancelled across 6 days'));
   assert.ok(alt.includes('peaking at 327 on Thu, Jul 16'));
+  assert.ok(alt.includes("That's 4.3% of 40,000 scheduled trips"));
+  assert.ok(alt.includes('4.0% weekdays'));
+  assert.ok(alt.includes('5.1% weekends'));
   assert.ok(alt.includes('Route 6 (315)'));
 });

@@ -1,6 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { bucket, formatRangeLabel, rangeForWindow } = require('../../src/shared/recap');
+const {
+  bucket,
+  formatRangeLabel,
+  rangeForWindow,
+  daysInWindowByType,
+} = require('../../src/shared/recap');
 
 test('bucket groups events at the same coords and counts sources', () => {
   const events = [
@@ -88,4 +93,11 @@ test('rangeForWindow week covers the 7 full days ending yesterday, not the post 
   assert.equal(r.label, 'Jul 12 – 18');
   // Window is exactly 7 calendar days, aligned to ET midnight boundaries.
   assert.equal(r.until - r.since, 7 * 24 * 60 * 60 * 1000);
+});
+
+test('daysInWindowByType buckets Jul 12 – 18 2026 (Sun–Sat) correctly', () => {
+  const r = rangeForWindow('week', Date.UTC(2026, 6, 19, 14, 20));
+  const counts = daysInWindowByType(r.since, r.until);
+  // Sun Jul 12, Mon–Fri Jul 13–17, Sat Jul 18.
+  assert.deepEqual(counts, { weekday: 5, saturday: 1, sunday: 1 });
 });

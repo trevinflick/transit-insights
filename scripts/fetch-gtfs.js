@@ -25,11 +25,31 @@ const SCHED_DB_PATH = Path.join(__dirname, '..', 'data', 'gtfs', 'schedule.sqlit
 const { allRoutes } = require('../src/bus/routes');
 const BUS_ROUTES = [...allRoutes].sort();
 
-async function downloadGtfs() {
+// `todayStr` local-date-format string ("20260907") — same basis main() uses
+// to match calendar.txt/calendar_dates.txt rows. Pure; exported for testing.
+//
+// A rolling 24h age check (the old approach) can serve a zip downloaded
+// *yesterday* straight through a schedule-version cutover: cron fires once a
+// day, so the zip's age at the next run is always just under 24h, meaning
+// "cached" essentially never expires on its own schedule. That's exactly
+// what happened at the 2026-09-07 COTA schedule change — the zip cached
+// Sept 6 (the old schedule, whose calendar.txt validity ended before the
+// 9/7 cutover) was reused Sept 7 morning, resolving ZERO active service_ids
+// and writing a completely empty index.json all day. Comparing calendar
+// dates instead guarantees at least one fresh download per calendar day,
+// which is what actually matters here — todayStr, not wall-clock age, is
+// what decides which calendar rows apply.
+function isZipFreshForToday(zipMtimeMs, todayStr) {
+  const d = new Date(zipMtimeMs);
+  const mtimeStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  return mtimeStr === todayStr;
+}
+
+async function downloadGtfs(todayStr) {
   if (Fs.existsSync(ZIP_PATH)) {
-    const age = Date.now() - Fs.statSync(ZIP_PATH).mtimeMs;
-    if (age < 24 * 60 * 60 * 1000) {
-      console.log('Using cached GTFS zip (< 1 day old)');
+    const mtimeMs = Fs.statSync(ZIP_PATH).mtimeMs;
+    if (isZipFreshForToday(mtimeMs, todayStr)) {
+      console.log('Using cached GTFS zip (already downloaded today)');
       return;
     }
   }
@@ -299,12 +319,12 @@ function writeScheduleDb({ busTripStops, tripMeta, firstDeparture, byStopId }) {
 
 async function main() {
   console.log(`Indexing ${BUS_ROUTES.length} bus routes: ${BUS_ROUTES.join(', ')}`);
-  await downloadGtfs();
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
+  await downloadGtfs(todayStr);
 
   console.log('Reading calendar.txt...');
   const calendars = parseCsv(await readFromZip('calendar.txt'));
-  const today = new Date();
-  const todayStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
 
   // Holiday service: exception_type=1 force-adds, =2 force-removes. Without
   // this, holidays (Memorial Day, Thanksgiving) ghost-fire en masse.
@@ -619,6 +639,22 @@ async function main() {
     out.trips[tripId] = { route: meta.route, dir: meta.dir, shapeId: meta.shapeId };
   }
 
+  // Total scheduled bus trips per day type — the "how many trips SHOULD have
+  // run" denominator for the recap's cancellation-rate line (src/shared/recap.js).
+  // Tallied off tripMeta (every trip whose service_id resolved to a dayType
+  // above), not out.trips, since that drops dayType. Normally covers
+  // weekday+saturday+sunday all at once (calendar.txt's date ranges are broad
+  // and resolveServiceDayTypes doesn't filter by today's actual weekday), but
+  // a calendar_dates exception that removes a whole service_id for today (a
+  // holiday) drops that day type's trips from this tally too — consumers
+  // should treat a missing/thin day type as "can't compute a rate," not zero
+  // scheduled service.
+  const dayTypeTripTotals = {};
+  for (const meta of tripMeta.values()) {
+    dayTypeTripTotals[meta.dayType] = (dayTypeTripTotals[meta.dayType] || 0) + 1;
+  }
+  out.dayTypeTripTotals = dayTypeTripTotals;
+
   console.log('Reading shapes.txt...');
   const usedShapeIds = new Set([...tripMeta.values()].map((m) => m.shapeId).filter(Boolean));
   let shapeRows = [];
@@ -709,6 +745,7 @@ module.exports = {
   dayTypeFor,
   computeFallbackHeadway,
   resolveHourlyHeadway,
+  isZipFreshForToday,
 };
 
 if (require.main === module) {
