@@ -10,6 +10,8 @@ const {
   routeShortName,
   routeLabel,
   routeTitle,
+  routeTitleForPattern,
+  branchLabelForHeadsign,
 } = require('../../src/bus/routes');
 
 // Gaps and ghosts both *require* GTFS lookups (headway/expected-active gates)
@@ -71,4 +73,86 @@ test('routeTitle includes the descriptive name without a redundant "Route CMAX (
   assert.equal(routeTitle('002'), 'Route 2 (E Main/N High)');
   assert.equal(routeTitle('023'), 'Route 23 (James-Stelzer)');
   assert.equal(routeTitle('101'), 'CMAX');
+});
+
+// branchLabelForHeadsign: route 1's post-2026-09-07 Kenny/Livingston split.
+// Real GTFS trip_headsign values confirmed against the live feed the day the
+// new schedule launched.
+test("branchLabelForHeadsign resolves both of route 1's Kenny headsigns", () => {
+  assert.equal(branchLabelForHeadsign('001', '1 KENNY TO DOWNTOWN'), 'Route 1 Kenny');
+  assert.equal(branchLabelForHeadsign('001', '1 KENNY TO OSU DUBLIN'), 'Route 1 Kenny');
+});
+
+test("branchLabelForHeadsign resolves both of route 1's Livingston headsigns", () => {
+  assert.equal(branchLabelForHeadsign('001', '1 LIVINGSTON TO DOWNTOWN'), 'Route 1 Livingston');
+  assert.equal(
+    branchLabelForHeadsign('001', '1 LIVINGSTON TO REYNOLDSBURG PARK AND RIDE'),
+    'Route 1 Livingston',
+  );
+});
+
+test('branchLabelForHeadsign is case-insensitive', () => {
+  assert.equal(branchLabelForHeadsign('001', 'kenny to downtown'), 'Route 1 Kenny');
+});
+
+test('branchLabelForHeadsign returns null (not a guess) for an unmatched route-1 headsign', () => {
+  // The real short-turn variant seen in the 2026-09-07 GTFS pull — genuine
+  // route 1 service, but neither branded line, so no label should be forced.
+  assert.equal(branchLabelForHeadsign('001', '1 OLENTANGY TO RIVERSIDE HOSPITAL'), null);
+});
+
+test('branchLabelForHeadsign returns null for a route with no branch mapping', () => {
+  assert.equal(branchLabelForHeadsign('002', 'anything at all'), null);
+});
+
+test('branchLabelForHeadsign returns null for a missing/empty headsign', () => {
+  assert.equal(branchLabelForHeadsign('001', null), null);
+  assert.equal(branchLabelForHeadsign('001', ''), null);
+});
+
+// routeTitleForPattern's fallback paths — all short-circuit before touching
+// the GTFS index, so they're deterministic regardless of whether
+// data/gtfs/index.json exists in this environment.
+test('routeTitleForPattern falls back to routeTitle for a route with no branch mapping', () => {
+  assert.equal(
+    routeTitleForPattern('002', { pid: '123', points: [{ lat: 1, lon: 1 }] }),
+    routeTitle('002'),
+  );
+});
+
+test('routeTitleForPattern falls back to routeTitle when no pattern is given', () => {
+  assert.equal(routeTitleForPattern('001', null), routeTitle('001'));
+  assert.equal(routeTitleForPattern('001', undefined), routeTitle('001'));
+});
+
+test('routeTitleForPattern falls back to routeTitle when the pattern has no points', () => {
+  assert.equal(routeTitleForPattern('001', {}), routeTitle('001'));
+  assert.equal(routeTitleForPattern('001', { pid: '123', points: [] }), routeTitle('001'));
+});
+
+// End-to-end against the real GTFS index (same convention as the
+// gap/ghost/lowFrequency coverage tests above — this suite already assumes
+// data/gtfs/index.json is present). Regression coverage for a real incident:
+// resolvePatternGroup wasn't exported from src/shared/gtfs.js, so this always
+// silently fell back to the generic name via routeTitleForPattern's
+// catch-and-fall-back — the fallback tests above still passed, masking it.
+// Endpoints are route 1's real origin/terminal coordinates confirmed in the
+// 2026-09-07 GTFS pull.
+test('routeTitleForPattern resolves the real Kenny and Livingston branches from the live index', () => {
+  const kenny = {
+    pid: 'test-kenny',
+    points: [
+      { lat: 40.097961, lon: -83.168121 }, // OSU Outpatient Care Dublin
+      { lat: 39.949237, lon: -82.999864 }, // Downtown
+    ],
+  };
+  const livingston = {
+    pid: 'test-livingston',
+    points: [
+      { lat: 39.96864, lon: -82.99363 }, // Downtown-side origin
+      { lat: 39.939288, lon: -82.82751 }, // Reynoldsburg Park & Ride
+    ],
+  };
+  assert.equal(routeTitleForPattern('001', kenny), 'Route 1 Kenny');
+  assert.equal(routeTitleForPattern('001', livingston), 'Route 1 Livingston');
 });

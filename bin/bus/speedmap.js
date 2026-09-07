@@ -4,12 +4,7 @@ require('../../src/shared/env');
 const _ = require('lodash');
 const argv = require('minimist')(process.argv.slice(2));
 
-const {
-  names: routeNames,
-  routeShortName,
-  routeTitle,
-  allRoutes,
-} = require('../../src/bus/routes');
+const { names: routeNames, routeTitleForPattern, allRoutes } = require('../../src/bus/routes');
 const {
   collect,
   computeSamples,
@@ -36,7 +31,7 @@ const MIN_COVERAGE = 0.3;
 const MIN_ACTIVE_FOR_PICK = 2;
 
 function buildPostText(route, pattern, summary, startTime, endTime, callouts = []) {
-  const title = routeTitle(route);
+  const title = routeTitleForPattern(route, pattern);
   const dir = pattern.direction;
   const avg = summary.avg == null ? 'unavailable' : `${summary.avg.toFixed(1)} mph`;
   const window = `${formatTimeET(startTime)}–${formatTimeET(endTime)} ET`;
@@ -53,12 +48,10 @@ function buildPostText(route, pattern, summary, startTime, endTime, callouts = [
 }
 
 function buildAltText(route, pattern, summary) {
-  const short = routeShortName(route);
-  const fullName = routeNames[route];
-  const name = fullName && fullName !== short ? `${short} ${fullName}` : short;
+  const title = routeTitleForPattern(route, pattern);
   const dir = pattern.direction.toLowerCase();
   const avg = summary.avg == null ? 'unavailable' : `${summary.avg.toFixed(1)} mph`;
-  return `Speedmap of the ${name} bus route ${dir} over a one-hour window, with route segments colored by average bus speed. Overall average: ${avg}. Red segments indicate stopped or crawling buses under 5 mph, orange under 10, yellow under 15, green 15 and above.`;
+  return `Speedmap of ${title} ${dir} over a one-hour window, with route segments colored by average bus speed. Overall average: ${avg}. Red segments indicate stopped or crawling buses under 5 mph, orange under 10, yellow under 15, green 15 and above.`;
 }
 
 async function main() {

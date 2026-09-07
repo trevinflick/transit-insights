@@ -21,12 +21,13 @@
 // than COTA's vague "between A and B" window ever did. See
 // alert.cancelledTrips (src/bus/alerts.js#normalizeAlert).
 //
-// Said as "buses cancelled," not "trips cancelled" — scheduleRelationship
-// CANCELED means the bus simply never runs (confirmed against the live feed:
-// every "cancelled stops" alert uses this, no other relationship value), and
-// "trip" is transit jargon that risks reading as a partial/detour skip
-// rather than a full no-show. Said as "cancelled today," not "upcoming
-// buses cancelled" — the listed times are a real mix of already-passed and
+// Said as "bus trips cancelled," not just "buses cancelled" — matches the
+// recap's wording (src/shared/recapPost.js) and reads as scheduled runs that
+// never happened, not a claim that vehicles were pulled from the fleet.
+// scheduleRelationship CANCELED means the bus simply never runs (confirmed
+// against the live feed: every "cancelled stops" alert uses this, no other
+// relationship value). Said as "cancelled today," not "upcoming buses
+// cancelled" — the listed times are a real mix of already-passed and
 // still-to-come (COTA pre-announces a block's whole remaining day at once),
 // so "upcoming" would be wrong for whichever ones already passed by the
 // time this posts; "today" makes no tense claim and is correct either way.
@@ -38,9 +39,39 @@
 // direction. Whole-block cancellations always affect both directions (the
 // bus runs back and forth all day), but stating that explicitly removes any
 // ambiguity.
-const { routeTitle } = require('./routes');
+const { routeTitle, routeTitleForPattern } = require('./routes');
+const { getTripMeta, getShapePoints } = require('../shared/gtfs');
 const { formatGtfsTimeOfDay } = require('../shared/format');
 const { graphemeLength, POST_MAX_CHARS } = require('../shared/post');
+
+// Resolves the SPECIFIC branch for a route with per-branch headsigns
+// (currently just route 1's Kenny/Livingston split) from the alert's own
+// cancelled trips, rather than the combined routeTitle(). A block's trips
+// normally stay on one branch all day, but if this alert's cancelled trips
+// for `route` don't all agree on the same branch, fall back to the combined
+// name rather than asserting a single (possibly wrong) one. Also falls back
+// on any GTFS-index lookup failure (missing/stale index) — the route tag
+// line is core to every alert post, so it must never throw and take the
+// whole post down over what's ultimately a cosmetic disambiguation.
+function resolveRouteTitle(route, alert) {
+  try {
+    const trips = (alert.cancelledTrips || [])
+      .map((t) => getTripMeta(t.tripId))
+      .filter((meta) => meta && meta.route === route);
+    if (trips.length === 0) return routeTitle(route);
+    const titles = new Set(
+      trips.map((meta) => {
+        const points = meta.shapeId ? getShapePoints(meta.shapeId) : null;
+        return points
+          ? routeTitleForPattern(route, { pid: meta.shapeId, points })
+          : routeTitle(route);
+      }),
+    );
+    return titles.size === 1 ? [...titles][0] : routeTitle(route);
+  } catch (_e) {
+    return routeTitle(route);
+  }
+}
 
 // "Cancelled stops on Route 008 NORTH, SOUTH." → ["NORTH", "SOUTH"]
 // Returns null when the header doesn't match the expected COTA format.
@@ -73,19 +104,20 @@ function buildAlertBody(alert, { isReply = false } = {}) {
     const times = alert.cancelledTrips.map((t) => formatGtfsTimeOfDay(t.startTime)).join(', ');
     const dirs = formatDirections(extractDirections(alert.headerText));
     const qualifier = dirs ? ` (${dirs})` : '';
-    // "more buses cancelled" signals to a reader scrolling into a thread reply
-    // that this is an additional cancellation on top of whatever's above, not
-    // a standalone daily summary — without needing to know the total upfront.
+    // "more bus trips cancelled" signals to a reader scrolling into a thread
+    // reply that this is an additional cancellation on top of whatever's
+    // above, not a standalone daily summary — without needing to know the
+    // total upfront.
     const verb = isReply
-      ? `more bus${n === 1 ? '' : 'es'} cancelled`
-      : `bus${n === 1 ? '' : 'es'} cancelled today`;
+      ? `more bus trip${n === 1 ? '' : 's'} cancelled`
+      : `bus trip${n === 1 ? '' : 's'} cancelled today`;
     return `${n} ${verb}${qualifier}: ${times}`;
   }
   return [alert.headerText, alert.descriptionText].filter(Boolean).join('\n');
 }
 
 function buildAlertPostText(alert, { isReply = false } = {}) {
-  const routeTags = (alert.routeIds || []).map((r) => routeTitle(r)).join(', ');
+  const routeTags = (alert.routeIds || []).map((r) => resolveRouteTitle(r, alert)).join(', ');
   const tag = routeTags ? `⚠ ${routeTags} — service alert` : '⚠ Service alert';
   const body = buildAlertBody(alert, { isReply });
   const full = body ? `${tag}\n${body}` : tag;
@@ -101,7 +133,7 @@ function buildAlertPostText(alert, { isReply = false } = {}) {
 // Alt text for the disruption map (src/map/bus/disruption.js) — only built
 // when that map actually rendered, so this assumes routeIds is non-empty.
 function buildAlertAltText(alert) {
-  const routeTags = (alert.routeIds || []).map((r) => routeTitle(r)).join(', ');
+  const routeTags = (alert.routeIds || []).map((r) => resolveRouteTitle(r, alert)).join(', ');
   return `Map highlighting the ${routeTags} route pattern(s) affected by today's service alert.`;
 }
 

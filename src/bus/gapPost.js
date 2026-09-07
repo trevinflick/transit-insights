@@ -1,4 +1,4 @@
-const { routeTitle } = require('./routes');
+const { routeTitleForPattern } = require('./routes');
 const { formatCallouts } = require('../shared/history');
 const {
   formatMinutes,
@@ -53,7 +53,7 @@ function buildPostText(gap, pattern, stop, callouts = [], opts = {}) {
   // older phrasing read as "N minutes since a bus was here," but the span
   // measures the distance between the two buses bracketing the stretch. Tilde:
   // a distance/speed estimate, not a measured ETA.
-  const base = `🕳️ ${routeTitle(gap.route)} — ${pattern.direction}\n\nNo buses${whereClause} — a ~${formatMinutes(gap.gapMin)} gap, scheduled around every ${formatMinutes(gap.expectedMin)} this hour${busesLine}${missingLine}`;
+  const base = `🕳️ ${routeTitleForPattern(gap.route, pattern)} — ${pattern.direction}\n\nNo buses${whereClause} — a ~${formatMinutes(gap.gapMin)} gap, scheduled around every ${formatMinutes(gap.expectedMin)} this hour${busesLine}${missingLine}`;
   const tail = formatCallouts(callouts);
   return tail ? `${base}\n\n${tail}` : base;
 }
@@ -65,7 +65,7 @@ function buildAltText(gap, pattern, stop) {
   let whereClause = ' between buses';
   if (before && after) whereClause = ` with no buses between ${before} and ${after}`;
   else if (mid) whereClause = ` between buses near ${mid}`;
-  return `Map of ${routeTitle(gap.route)} ${pattern.direction.toLowerCase()} showing a ${formatMinutes(gap.gapMin)} gap${whereClause}.`;
+  return `Map of ${routeTitleForPattern(gap.route, pattern)} ${pattern.direction.toLowerCase()} showing a ${formatMinutes(gap.gapMin)} gap${whereClause}.`;
 }
 
 // Timelapse reply text. The clip is framed at the gap *midpoint* (videoStop, in
@@ -75,11 +75,11 @@ function buildAltText(gap, pattern, stop) {
 // distance to cover (it's only crossing the back half). Tying the vehicle id to
 // the still post's "Next up: #N" line keeps the thread coherent. Progress is the
 // concrete remaining distance, not a vague bucket.
-function buildGapVideoPostText(gap, result) {
+function buildGapVideoPostText(gap, pattern, result) {
   const station = result.stopName;
   const run = gap.trailing?.vid ? ` (#${gap.trailing.vid})` : '';
   const elapsed = elapsedMinutesLabel(result.elapsedSec);
-  const lead = `~${result.gapMin} min ${routeTitle(gap.route)} gap.`;
+  const lead = `~${result.gapMin} min ${routeTitleForPattern(gap.route, pattern)} gap.`;
   if (result.reached) {
     const where = station ? `${station} — the middle of the gap —` : 'the middle of the gap';
     return `${lead} The next bus${run} reached ${where} ${elapsed} later.`;
@@ -92,7 +92,7 @@ function buildGapVideoPostText(gap, result) {
 function buildGapVideoAltText(gap, pattern, result) {
   const stop = result.stopName;
   const where = stop ? `${stop}, the middle of the gap,` : 'the middle of the gap';
-  return `Timelapse map of ${routeTitle(gap.route)} ${pattern.direction.toLowerCase()}: the next bus closing on ${where} over ${formatMinutes(result.elapsedSec / 60)}.`;
+  return `Timelapse map of ${routeTitleForPattern(gap.route, pattern)} ${pattern.direction.toLowerCase()}: the next bus closing on ${where} over ${formatMinutes(result.elapsedSec / 60)}.`;
 }
 
 module.exports = { buildPostText, buildAltText, buildGapVideoPostText, buildGapVideoAltText };

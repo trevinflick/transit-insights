@@ -445,6 +445,7 @@ module.exports = {
   expectedBusRouteActiveTrips,
   expectedBusRouteHeadwayMin,
   resolveDirection,
+  resolvePatternGroup,
   matchPattern,
   dayTypeFor,
   chicagoHour,

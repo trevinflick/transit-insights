@@ -1,4 +1,4 @@
-const { routeTitle } = require('./routes');
+const { routeTitleForPattern } = require('./routes');
 const { assignBusNumbers } = require('./bunching');
 const { formatCallouts } = require('../shared/history');
 const {
@@ -10,7 +10,7 @@ const {
 } = require('../shared/format');
 
 function buildPostText(bunch, pattern, stop, callouts = [], opts = {}) {
-  const title = routeTitle(bunch.route);
+  const title = routeTitleForPattern(bunch.route, pattern);
   // Tag each run with the identity number it carries on the map/video so a
   // reader can tie a numbered disc back to its bus. Listed in number order
   // (1 = lead bus) so the parenthetical reads 1, 2, 3… down the line.
@@ -52,12 +52,15 @@ function buildPostText(bunch, pattern, stop, callouts = [], opts = {}) {
 }
 
 function buildAltText(bunch, pattern, stop) {
-  return `Map of ${routeTitle(bunch.route)} near ${stop.stopName} showing ${bunch.vehicles.length} ${pattern.direction.toLowerCase()} buses within ${formatDistance(bunch.spanFt)} of each other.`;
+  return `Map of ${routeTitleForPattern(bunch.route, pattern)} near ${stop.stopName} showing ${bunch.vehicles.length} ${pattern.direction.toLowerCase()} buses within ${formatDistance(bunch.spanFt)} of each other.`;
 }
 
 function buildVideoPostText(result, bunch, pattern) {
   const elapsed = elapsedMinutesLabel(result.elapsedSec);
-  const context = bunch && pattern ? `${routeTitle(bunch.route)} — ${pattern.direction}\n` : '';
+  const context =
+    bunch && pattern
+      ? `${routeTitleForPattern(bunch.route, pattern)} — ${pattern.direction}\n`
+      : '';
   if (result.finalSpanFt == null)
     return `${context}Timelapse of the above — ${elapsed} of real time.`;
   const delta = result.finalSpanFt - result.initialSpanFt;
@@ -71,7 +74,7 @@ function buildVideoPostText(result, bunch, pattern) {
 }
 
 function buildVideoAltText(bunch, pattern, stop, result) {
-  return `Timelapse map of ${routeTitle(bunch.route)} near ${stop.stopName} showing ${bunch.vehicles.length} ${pattern.direction.toLowerCase()} buses moving over ${formatMinSec(result.elapsedSec)}.`;
+  return `Timelapse map of ${routeTitleForPattern(bunch.route, pattern)} near ${stop.stopName} showing ${bunch.vehicles.length} ${pattern.direction.toLowerCase()} buses moving over ${formatMinSec(result.elapsedSec)}.`;
 }
 
 module.exports = { buildPostText, buildAltText, buildVideoPostText, buildVideoAltText };

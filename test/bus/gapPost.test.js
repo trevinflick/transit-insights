@@ -130,7 +130,7 @@ test('buildGapVideoPostText names the mid-gap stop when the bus reaches it', () 
     endDistFt: 0,
     stopName: 'Foster & Marine Drive',
   };
-  const text = buildGapVideoPostText(g, result);
+  const text = buildGapVideoPostText(g, pattern, result);
   assert.ok(text.includes('~39 min Route 147'));
   assert.ok(text.includes('reached Foster & Marine Drive — the middle of the gap'));
   assert.ok(text.includes('10 minutes later'));
@@ -146,7 +146,7 @@ test('buildGapVideoPostText reports the concrete remaining distance in miles', (
     endDistFt: 5_000,
     stopName: 'Foster & Marine Drive',
   };
-  const text = buildGapVideoPostText(g, result);
+  const text = buildGapVideoPostText(g, pattern, result);
   assert.ok(text.includes('closed to within ~0.95 mi of Foster & Marine Drive'));
   assert.ok(text.includes('the middle of the gap'));
 });
@@ -161,7 +161,7 @@ test('buildGapVideoPostText reports remaining distance in feet under a quarter m
     endDistFt: 640,
     stopName: 'Foster & Marine Drive',
   };
-  const text = buildGapVideoPostText(g, result);
+  const text = buildGapVideoPostText(g, pattern, result);
   assert.ok(text.includes('closed to within ~640 ft of Foster & Marine Drive'));
 });
 
@@ -175,13 +175,13 @@ test('buildGapVideoPostText ties in the Next up vehicle id when present', () => 
     endDistFt: 0,
     stopName: 'Foster & Marine Drive',
   };
-  assert.ok(buildGapVideoPostText(g, result).includes('next bus (#8021) reached'));
+  assert.ok(buildGapVideoPostText(g, pattern, result).includes('next bus (#8021) reached'));
 });
 
 test('buildGapVideoPostText falls back to "the middle of the gap" with no stop name', () => {
   const g = { route: '147' };
   const result = { reached: true, gapMin: 39, elapsedSec: 600, startDistFt: 5_000, endDistFt: 0 };
-  const text = buildGapVideoPostText(g, result);
+  const text = buildGapVideoPostText(g, pattern, result);
   assert.ok(text.includes('reached the middle of the gap'));
   assert.ok(text.includes('~39 min Route 147'));
 });

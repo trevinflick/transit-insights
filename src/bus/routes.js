@@ -1,3 +1,5 @@
+const { resolvePatternGroup } = require('../shared/gtfs');
+
 // Display names keyed by COTA's `route_id` (zero-padded, e.g. "022"), sourced
 // from COTA's published GTFS routes.txt so every active route is represented.
 // Extend the bunching/speedmap/gaps/ghosts arrays below to start tracking
@@ -159,6 +161,61 @@ function routeTitle(route) {
   return `Route ${short} (${name})`;
 }
 
+// Route 1 is one GTFS route_id ("001") but, since the 2026-09-07 schedule
+// change, is branded and headsigned as two distinct lines sharing only a
+// downtown segment — "Kenny" (extended north to OSU Outpatient Care Dublin)
+// and "Livingston" (to Reynoldsburg Park & Ride). A rider only cares which
+// BRANCH a specific bunching/gap/speedmap/cancellation event affects, not
+// the combined "Kenny/Livingston" umbrella name (which reads as if both
+// branches are implicated). See the branch-splitting note above `gaps` for
+// how this route_id resolves to multiple pattern groups per direction.
+//
+// Deliberately NOT applied to every consumer of routeTitle(): ghost
+// detection (src/bus/ghosts.js) merges every pattern in a GTFS direction
+// into one expected/observed count, so a ghost event genuinely spans both
+// branches — labeling it as just "Kenny" or "Livingston" would be actively
+// wrong, not just imprecise. Only apply routeTitleForPattern() where the
+// event is already anchored to one specific pid (bunching, gaps, speedmap;
+// cancelled-trip alerts via their tripId's shapeId).
+const BRANCH_HEADSIGN_MATCH = {
+  '001': [
+    { test: (h) => /KENNY/i.test(h), label: 'Route 1 Kenny' },
+    { test: (h) => /LIVINGSTON/i.test(h), label: 'Route 1 Livingston' },
+  ],
+};
+
+// Pure: does `headsign` confidently identify one of `route`'s known
+// branches? Returns null (not a guess) when the route has no branch mapping
+// or the headsign doesn't match any of them — e.g. route 1's "OLENTANGY TO
+// RIVERSIDE HOSPITAL" short-turn, which is real service but neither branded
+// line. Exported for testing; routeTitleForPattern below is the impure
+// wrapper that resolves an actual GTFS pattern group to a headsign.
+function branchLabelForHeadsign(route, headsign) {
+  const branches = BRANCH_HEADSIGN_MATCH[route];
+  if (!branches || !headsign) return null;
+  const branch = branches.find((b) => b.test(headsign));
+  return branch ? branch.label : null;
+}
+
+// Like routeTitle(), but resolves the SPECIFIC branch for a route with
+// per-branch headsigns (currently just route 1) from `pattern` — a
+// {pid, points, ...} shape, the same object callers already pass to
+// src/shared/gtfs.js#expectedHeadwayMin/expectedTripMinutes. Falls back to
+// routeTitle(route) when: the route has no branch mapping, no pattern was
+// given, the resolved pattern group's headsign doesn't confidently match a
+// known branch, or the GTFS index lookup itself fails (missing/stale index):
+// this is a cosmetic disambiguation on top of a post that must still go out
+// even when the schedule data behind it isn't there.
+function routeTitleForPattern(route, pattern) {
+  if (!BRANCH_HEADSIGN_MATCH[route] || !pattern?.points?.length) return routeTitle(route);
+  try {
+    const grp = resolvePatternGroup({ ...pattern, route });
+    return branchLabelForHeadsign(route, grp?.headsign) || routeTitle(route);
+  } catch (_e) {
+    return routeTitle(route);
+  }
+}
+
 module.exports = {
   names,
   gaps,
@@ -167,5 +224,7 @@ module.exports = {
   allRoutes,
   routeShortName,
   routeLabel,
+  routeTitleForPattern,
   routeTitle,
+  branchLabelForHeadsign,
 };
