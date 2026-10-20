@@ -7,8 +7,9 @@ FROM node:22-bookworm-slim
 # pings (ca-certificates alongside it — curl needs the system CA bundle for
 # TLS, unlike Node's HTTPS calls elsewhere in the app, which bundle their own
 # and worked fine without this); sqlite3 is the CLI used by
-# scripts/backup-db.sh (kept for parity even though off-box backups aren't
-# wired up yet — see docs/BACKUPS.md); unzip is shelled out to by
+# scripts/backup-db.sh, and rclone uploads its snapshot to R2 (config is
+# bind-mounted — see docker-compose.yml and docs/BACKUPS.md; without rclone
+# here every nightly backup failed); unzip is shelled out to by
 # scripts/fetch-gtfs.js to read COTA's GTFS zip (present on macOS by default,
 # so this was invisible until building for Linux); fontconfig + fonts-inter
 # (the family every SVG label in src/map/*.js asks for, falling back to
@@ -17,7 +18,7 @@ FROM node:22-bookworm-slim
 # bus-position numbers, callout text) silently drew blank instead of erroring,
 # which is why it looked fine in logs but wrong in the actual post images.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cron curl ca-certificates sqlite3 unzip fontconfig fonts-inter fonts-dejavu-core \
+    cron curl ca-certificates sqlite3 rclone unzip fontconfig fonts-inter fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

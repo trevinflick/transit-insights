@@ -7,6 +7,7 @@ require('dotenv').config({ path: require('node:path').join(__dirname, '..', '.en
 const { getVehicles } = require('../src/bus/api');
 const { allRoutes: pulseRoutes } = require('../src/bus/routes');
 const { rolloffOldObservations } = require('../src/shared/observations');
+const { recordFleetTick } = require('../src/shared/fleetHistory');
 
 async function main() {
   rolloffOldObservations();
@@ -16,6 +17,7 @@ async function main() {
   }
   console.log(`Observing ${pulseRoutes.length} bus route(s)...`);
   const vehicles = await getVehicles(pulseRoutes);
+  recordFleetTick(vehicles);
   console.log(`Recorded ${vehicles.length} vehicle observation(s)`);
 }
 

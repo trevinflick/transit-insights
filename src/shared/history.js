@@ -228,6 +228,30 @@ function db() {
     CREATE INDEX IF NOT EXISTS idx_obs_kind_route_ts
       ON observations(kind, route, ts);
 
+    -- Permanent fleet history (never rolled off — observations only keep 7
+    -- days). One row per bus per America/New_York calendar date it reported a
+    -- position; written each observer tick by src/shared/fleetHistory.js.
+    -- label is the fleet number painted on the bus (e.g. 2602); its first two
+    -- digits are the series/model year.
+    CREATE TABLE IF NOT EXISTS vehicle_days (
+      date TEXT NOT NULL,
+      vehicle_id TEXT NOT NULL,
+      label TEXT,
+      first_ts INTEGER NOT NULL,
+      last_ts INTEGER NOT NULL,
+      ticks INTEGER NOT NULL DEFAULT 0,
+      routes TEXT,
+      PRIMARY KEY (date, vehicle_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_vehicle_days_vehicle ON vehicle_days(vehicle_id, date);
+
+    -- Per-date peak of buses reporting in the same observer tick.
+    CREATE TABLE IF NOT EXISTS fleet_days (
+      date TEXT PRIMARY KEY,
+      peak_active INTEGER NOT NULL,
+      peak_ts INTEGER NOT NULL
+    );
+
     -- Metra GTFS-realtime TripUpdate snapshots: one row per (snapshot tick,
     -- trip, stop). The substrate for delay computation and inferred-cancellation
     -- detection (a scheduled trip whose stops never get a live prediction).

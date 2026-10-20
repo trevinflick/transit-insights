@@ -77,6 +77,8 @@ function parseVehicle(entity) {
   const ts = longToNum(v.timestamp);
   return {
     vid: v.vehicle?.id ?? null,
+    // Fleet number painted on the bus (vid is "1" + this).
+    label: v.vehicle?.label ?? null,
     route: meta?.route ?? (trip.routeId != null ? String(trip.routeId) : null),
     pid: shapeId != null ? String(shapeId) : null,
     lat,

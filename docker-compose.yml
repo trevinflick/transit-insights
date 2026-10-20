@@ -23,3 +23,10 @@ services:
       # bin/cron-run.sh appends to — bind-mounted so logs are inspectable
       # from the host and the ping key survives rebuilds.
       - ./cron:/app/cron
+      # tmp/db-backups holds scripts/backup-db.sh's local snapshots. Inside
+      # the image they were wiped by every rebuild; bind-mounted they're a
+      # real fallback copy if an R2 upload fails.
+      - ./tmp:/app/tmp
+      # rclone's R2 credentials (gitignored; created once on the server per
+      # docs/BACKUPS.md). The container runs as root, hence /root.
+      - ./rclone:/root/.config/rclone

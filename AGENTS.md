@@ -22,7 +22,7 @@ detect → render → post → exit.
   `kind='bus'` here.
 
 **Read first**: `README.md`, `cron/crontab.txt` (what runs when), `docs/
-{BUNCHING,GAPS,GHOSTING,SPEEDMAP}.md` (still mostly accurate but were
+{BUNCHING,GAPS,GHOSTING,SPEEDMAP,FLEET,BACKUPS}.md` (still mostly accurate but were
 written for the CTA fork — some sections describe train-only behavior that
 no longer applies here).
 
@@ -66,7 +66,8 @@ load-bearing for `src/bus/api.js` and `scripts/fetch-gtfs.js`:
   git pull && docker compose build && docker compose up -d
   ```
   `build` leaves the old container up (no downtime); `up -d` swaps it in.
-  Never scp. Bind-mounts (`state/`, `data/`, `.env`, `cron/`) survive
+  Never scp. Bind-mounts (`state/`, `data/`, `.env`, `cron/`, `tmp/`,
+  `rclone/`) survive
   rebuilds, so `state/history.sqlite` is preserved. There is **no `node` on
   the host** — run scripts with `docker exec transit-insights node <script>`.
   Schema migrations in `src/shared/history.js#db()` apply on the first DB open
@@ -144,6 +145,8 @@ standing infra notice, veto; short-term `REDUCED_SERVICE`/route-wide
 | Bus route list | `src/bus/routes.js` |
 | Event-replay track archiver | `bin/export-event-tracks.js`, `src/shared/eventTracks.js`, `docs/REPLAY.md` |
 | Video dropout/bridge/ghost model | `src/shared/videoTracks.js`, `docs/REPLAY.md` |
+| Fleet history (buses in service per day, permanent) | `src/shared/fleetHistory.js`, `docs/FLEET.md` |
+| DB backups to R2 | `scripts/backup-db.sh`, `docs/BACKUPS.md` |
 | Cron wrapper | `bin/cron-run.sh` |
 
 ## Operational levers

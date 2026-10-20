@@ -5,6 +5,7 @@ assets/
 /data/
 /state/
 /tmp/
+/rclone/
 *.log
 .DS_Store
 .claude/

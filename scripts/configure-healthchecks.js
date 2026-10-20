@@ -53,6 +53,9 @@ const CHECKS = {
   'train-speedmap': { period: 120 * M, grace: 90 * M },
   // GTFS refresh, daily at 03:15.
   'fetch-gtfs': { period: 24 * 60 * M, grace: 2 * 60 * M },
+  // DB backup to R2, daily at 04:17. Pinged by scripts/backup-db.sh itself
+  // (not cron-run.sh, which is node-only).
+  'db-backup': { period: 24 * 60 * M, grace: 2 * 60 * M },
 };
 
 const API = 'https://healthchecks.io/api/v3/checks/';
