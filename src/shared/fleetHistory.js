@@ -106,26 +106,27 @@ function seedFromObservations(source, target = getDb()) {
       FROM observations WHERE kind = 'bus'
       GROUP BY ts, vehicle_id ORDER BY ts
     `)
-    .all();
+    .iterate(); // streamed: a 7-day snapshot is ~1.6M rows, too many to hold at once
   const days = new Map();
   const peaks = new Map();
   let curTs = null;
+  let curDate = null;
   let curCount = 0;
   const closeTick = () => {
     if (curTs == null) return;
-    const date = etDate(curTs);
-    const p = peaks.get(date);
+    const p = peaks.get(curDate);
     if (!p || curCount > p.peak_active)
-      peaks.set(date, { date, peak_active: curCount, peak_ts: curTs });
+      peaks.set(curDate, { date: curDate, peak_active: curCount, peak_ts: curTs });
   };
   for (const t of ticks) {
     if (t.ts !== curTs) {
       closeTick();
       curTs = t.ts;
+      curDate = etDate(t.ts);
       curCount = 0;
     }
     curCount++;
-    const date = etDate(t.ts);
+    const date = curDate;
     const key = `${date}|${t.vehicle_id}`;
     const d = days.get(key);
     if (!d) {

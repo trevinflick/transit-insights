@@ -16,6 +16,7 @@ require('../src/shared/env');
 const Fs = require('node:fs');
 const Path = require('node:path');
 const Zlib = require('node:zlib');
+const { pipeline } = require('node:stream/promises');
 const Database = require('better-sqlite3');
 const { getDb } = require('../src/shared/history');
 const { seedFromObservations } = require('../src/shared/fleetHistory');
@@ -34,13 +35,14 @@ function expand(args) {
   return files;
 }
 
-function main() {
+async function main() {
   const target = getDb();
   const tmp = Path.join(Path.dirname(target.name), `seed-fleet-${process.pid}.sqlite`);
   for (const file of expand(process.argv.slice(2))) {
     let path = file;
     if (file.endsWith('.gz')) {
-      Fs.writeFileSync(tmp, Zlib.gunzipSync(Fs.readFileSync(file)));
+      // Streamed: the server has ~2 GB RAM and the bots are running alongside.
+      await pipeline(Fs.createReadStream(file), Zlib.createGunzip(), Fs.createWriteStream(tmp));
       path = tmp;
     }
     const source = new Database(path, { readonly: true });
@@ -49,11 +51,16 @@ function main() {
       console.log(`${Path.basename(file)}: ${r.vehicleDays} bus-days over ${r.dates} date(s)`);
     } finally {
       source.close();
-      if (path === tmp) Fs.rmSync(tmp, { force: true });
+      if (path === tmp) {
+        for (const f of [tmp, `${tmp}-shm`, `${tmp}-wal`]) Fs.rmSync(f, { force: true });
+      }
     }
   }
   const r = seedFromObservations(target, target);
   console.log(`live observations: ${r.vehicleDays} bus-days over ${r.dates} date(s)`);
 }
 
-main();
+main().catch((e) => {
+  console.error(e.stack || e);
+  process.exit(1);
+});
