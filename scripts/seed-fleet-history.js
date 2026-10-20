@@ -37,6 +37,9 @@ function expand(args) {
 
 async function main() {
   const target = getDb();
+  // The every-minute observer and the bots write to this DB too; wait out
+  // their write locks rather than failing at better-sqlite3's 5s default.
+  target.pragma('busy_timeout = 60000');
   const tmp = Path.join(Path.dirname(target.name), `seed-fleet-${process.pid}.sqlite`);
   for (const file of expand(process.argv.slice(2))) {
     let path = file;
